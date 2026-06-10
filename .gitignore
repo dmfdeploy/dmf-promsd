@@ -1,0 +1,22 @@
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+.mypy_cache/
+.coverage
+build/
+dist/
+*.egg-info/
+
+# Secrets-prevention baseline
+*.kubeconfig
+*.tfstate
+*.tfstate.*
+.terraform/
+hosts.ini
+openbao-*
+*.pem
+*.key
+secret_id*
+.env
+.env.*

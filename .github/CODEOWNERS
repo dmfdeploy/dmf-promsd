@@ -1,0 +1,3 @@
+# dmf-promsd — CODEOWNERS. Activates on GitHub once branch protection requires reviews.
+*                    @dmfdeploy/maintainers
+/.github/            @dmfdeploy/maintainers
