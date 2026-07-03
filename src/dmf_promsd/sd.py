@@ -171,6 +171,13 @@ def _probe_target(record: MonitoredRecord) -> str | None:
     return target
 
 
+def _normalize_probe_path(value: Any) -> str | None:
+    text = _stringify(value)
+    if not text:
+        return None
+    return "/" + text.lstrip("/")
+
+
 def _group(target: str, labels: dict[str, str]) -> dict[str, Any]:
     return {"targets": [target], "labels": labels}
 
@@ -183,6 +190,7 @@ def _build_lane(
     default_module: str | None = None,
     target_resolver: Callable[[MonitoredRecord], str | None],
     labels_resolver: Callable[[Mapping[str, Any]], dict[str, str]] = _common_labels,
+    path_field: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     groups: list[dict[str, Any]] = []
     skipped = Counter[str]()
@@ -201,6 +209,12 @@ def _build_lane(
             if not target:
                 skipped["missing_target"] += 1
                 continue
+            # ADR-0038 Amendment B: a URL path rides the target, so it only
+            # applies to http-prober modules — never tcp/icmp/snmp.
+            if path_field and module_text.startswith("http_"):
+                path = _normalize_probe_path(custom_fields.get(path_field))
+                if path:
+                    target = f"{target}{path}"
             labels = labels_resolver(data)
             labels["__param_module"] = module_text
             groups.append(_group(target, labels))
@@ -256,6 +270,7 @@ def build_payloads(
         tag=MONITORING_PROBE_TAG,
         module_field="probe_module",
         target_resolver=_probe_target,
+        path_field="probe_path",
     )
     snmp_records = [record for record in records if record.kind == "device"]
     snmp, snmp_skipped = _build_lane(
