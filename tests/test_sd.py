@@ -229,3 +229,105 @@ def test_snmp_defaults_to_if_mib_when_module_is_unset():
 def test_extract_address_strips_prefix_length():
     assert _strip_mask("192.0.2.5/24") == "192.0.2.5"
     assert _extract_address({"address": "192.0.2.5/24"}) == "192.0.2.5"
+
+
+def _probe_targets(payloads):
+    return [group["targets"][0] for group in payloads["probe"]]
+
+
+def test_probe_path_appends_to_cluster_dns_target():
+    payloads, skipped, _ = build_payloads(
+        services=[
+            _service(
+                custom_fields={
+                    "probe_module": "http_2xx",
+                    "cluster_service": "loki",
+                    "cluster_namespace": "monitoring",
+                    "cluster_port": 3100,
+                    "probe_path": "/ready",
+                }
+            )
+        ],
+        devices=[],
+        virtual_machines=[],
+    )
+
+    assert _probe_targets(payloads) == ["loki.monitoring.svc.cluster.local:3100/ready"]
+    assert skipped["probe"] == {}
+
+
+def test_probe_path_normalized_to_single_leading_slash():
+    payloads, _, _ = build_payloads(
+        services=[
+            _service(
+                custom_fields={
+                    "probe_module": "http_2xx",
+                    "cluster_service": "loki",
+                    "cluster_namespace": "monitoring",
+                    "cluster_port": 3100,
+                    "probe_path": "ready",
+                }
+            )
+        ],
+        devices=[],
+        virtual_machines=[],
+    )
+
+    assert _probe_targets(payloads) == ["loki.monitoring.svc.cluster.local:3100/ready"]
+
+
+def test_probe_path_absent_or_empty_leaves_target_unchanged():
+    base_fields = {
+        "probe_module": "http_2xx",
+        "cluster_service": "grafana",
+        "cluster_namespace": "monitoring",
+        "cluster_port": 3000,
+    }
+    for extra in ({}, {"probe_path": ""}, {"probe_path": "   "}, {"probe_path": None}):
+        payloads, _, _ = build_payloads(
+            services=[_service(custom_fields={**base_fields, **extra})],
+            devices=[],
+            virtual_machines=[],
+        )
+        assert _probe_targets(payloads) == ["grafana.monitoring.svc.cluster.local:3000"]
+
+
+def test_probe_path_appends_to_fallback_address_target():
+    payloads, _, _ = build_payloads(
+        services=[
+            _service(
+                custom_fields={
+                    "probe_module": "http_2xx",
+                    "metrics_port": 3100,
+                    "probe_path": "/ready",
+                }
+            )
+        ],
+        devices=[],
+        virtual_machines=[],
+    )
+
+    assert _probe_targets(payloads) == ["dmf.example.com:3100/ready"]
+
+
+def test_probe_path_ignored_for_non_http_modules():
+    payloads, _, _ = build_payloads(
+        services=[
+            _service(
+                custom_fields={
+                    "probe_module": "tcp_connect",
+                    "cluster_service": "loki",
+                    "cluster_namespace": "monitoring",
+                    "cluster_port": 3100,
+                    "probe_path": "/ready",
+                }
+            )
+        ],
+        devices=[_device(custom_fields={"probe_module": "icmp", "probe_path": "/ready"})],
+        virtual_machines=[],
+    )
+
+    assert _probe_targets(payloads) == [
+        "loki.monitoring.svc.cluster.local:3100",
+        "dmf.example.com",
+    ]
