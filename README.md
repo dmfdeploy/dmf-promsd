@@ -1,5 +1,7 @@
 # dmf-promsd
 
+[![CI](https://github.com/dmfdeploy/dmf-promsd/actions/workflows/ci.yml/badge.svg)](https://github.com/dmfdeploy/dmf-promsd/actions/workflows/ci.yml)
+
 NetBox to Prometheus `http_sd` adapter for the DMF platform.
 
 ## Configuration
