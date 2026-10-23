@@ -10,15 +10,19 @@ Part of [dmfdeploy](https://github.com/dmfdeploy/dmfdeploy), an independent open
 
 The dmfdeploy platform keeps NetBox as its source of truth for inventory. `dmf-promsd` reads NetBox services, devices and virtual machines, and serves the ones that carry a monitoring tag as Prometheus [HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/) target groups. Prometheus then scrapes or probes new workloads without anyone editing its configuration.
 
-A record joins a lane when it has the matching tag in NetBox:
+A record joins a lane when it has the matching tag in NetBox and the lane reads that record type:
 
-| Tag | Endpoint | Lane |
-|---|---|---|
-| `monitoring:scrape` | `/sd/scrape` | Metrics endpoints. The target is the record's address and its `metrics_port` custom field. |
-| `monitoring:probe` | `/sd/probe` | Blackbox probes. The `probe_module` custom field names the probe module. |
-| `monitoring:snmp` | `/sd/snmp` | SNMP targets. The `snmp_module` custom field names the SNMP module. |
+| Tag | Endpoint | Reads | Lane |
+|---|---|---|---|
+| `monitoring:scrape` | `/sd/scrape` | Services, devices, virtual machines | Metrics endpoints. The target is the record's address plus its `metrics_port` custom field. The metrics path comes from the `metrics_path` custom field and defaults to `/metrics`. |
+| `monitoring:probe` | `/sd/probe` | Services, devices, virtual machines | Blackbox probes. The `probe_module` custom field names the probe module and has no default. |
+| `monitoring:snmp` | `/sd/snmp` | Devices only | SNMP targets. The `snmp_module` custom field names the SNMP module and defaults to `if_mib` when the device has none. Service and virtual machine records with this tag are ignored. |
 
-Records that lack a required field are skipped, and the skip counts appear in the `/healthz` response.
+A record with the `cluster_service` and `cluster_namespace` custom fields uses the cluster DNS name of that service as its address.
+
+The service skips a record in a lane when it lacks a required field: `metrics_port` for scrape, `probe_module` for probe, or an address for any lane. It keeps the skip counts in memory and does not return them from `/healthz`.
+
+`GET /healthz` returns the status, product name and version, the cache settings (`cache_ttl_seconds`, `http_sd_refresh` and `freshness_window_seconds`), `snapshot_age_seconds`, `source_counts` (the number of services, devices and virtual machines fetched from NetBox) and `last_error`.
 
 ## Run it
 
