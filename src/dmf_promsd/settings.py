@@ -33,9 +33,9 @@ class Settings:
 
 def load_settings() -> Settings:
     return Settings(
-        netbox_url=os.getenv("NETBOX_URL", ""),
-        netbox_token=os.getenv("NETBOX_TOKEN", ""),
-        netbox_validate_certs=_env_bool("NETBOX_VALIDATE_CERTS", True),
-        cache_ttl_seconds=_env_int("CACHE_TTL_SECONDS", 45),
-        http_sd_refresh=os.getenv("HTTP_SD_REFRESH", "30s"),
+        netbox_url=os.getenv("NETBOX_URL", Settings.netbox_url),
+        netbox_token=os.getenv("NETBOX_TOKEN", Settings.netbox_token),
+        netbox_validate_certs=_env_bool("NETBOX_VALIDATE_CERTS", Settings.netbox_validate_certs),
+        cache_ttl_seconds=_env_int("CACHE_TTL_SECONDS", Settings.cache_ttl_seconds),
+        http_sd_refresh=os.getenv("HTTP_SD_REFRESH", Settings.http_sd_refresh),
     )

@@ -14,12 +14,12 @@ from .sd import LANES
 from .settings import Settings, load_settings
 
 
-def _health_payload(cache: PromSDCache) -> dict[str, Any]:
+def _health_payload(cache: PromSDCache, refresh_hint: str) -> dict[str, Any]:
     state = cache.state()
     return {
         "status": "ok",
         "cache_ttl_seconds": cache.ttl_seconds,
-        "http_sd_refresh": cache.refresh_hint,
+        "http_sd_refresh": refresh_hint,
         "freshness_window_seconds": cache.freshness_window_seconds,
         "snapshot_age_seconds": state.age_seconds,
         "source_counts": state.snapshot.source_counts if state.snapshot else {},
@@ -67,11 +67,7 @@ def create_app(
         )
     own_cache = None
     if cache is None:
-        cache = own_cache = PromSDCache(
-            client=client,
-            ttl_seconds=settings.cache_ttl_seconds,
-            refresh_hint=settings.http_sd_refresh,
-        )
+        cache = own_cache = PromSDCache(client=client, ttl_seconds=settings.cache_ttl_seconds)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -98,7 +94,7 @@ def create_app(
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> JSONResponse:
-        payload = _health_payload(app.state.cache)
+        payload = _health_payload(app.state.cache, app.state.settings.http_sd_refresh)
         payload.update({"product": "DMF PromSD", "version": __version__})
         return JSONResponse(payload)
 
