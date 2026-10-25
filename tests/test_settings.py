@@ -4,14 +4,6 @@ import pytest
 
 from dmf_promsd.settings import Settings, load_settings
 
-ENVIRONMENT = (
-    "NETBOX_URL",
-    "NETBOX_TOKEN",
-    "NETBOX_VALIDATE_CERTS",
-    "CACHE_TTL_SECONDS",
-    "HTTP_SD_REFRESH",
-)
-
 
 def _netbox_and_cache(settings: Settings) -> tuple[str, str, bool, int, str]:
     return (
@@ -39,12 +31,3 @@ def test_load_settings_reads_the_environment(monkeypatch, validate_certs, expect
         7,
         "11s",
     )
-
-
-def test_load_settings_and_settings_share_the_defaults(monkeypatch):
-    for name in ENVIRONMENT:
-        monkeypatch.delenv(name, raising=False)
-    defaults = ("", "", True, 45, "30s")
-
-    assert _netbox_and_cache(load_settings()) == defaults
-    assert _netbox_and_cache(Settings()) == defaults

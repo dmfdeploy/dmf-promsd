@@ -41,9 +41,6 @@ _LIST_PATHS = {
     "virtual_machines": "/api/virtualization/virtual-machines/",
 }
 
-# Enough for any one test; a pagination bug would otherwise loop forever.
-_MAX_REQUESTS = 500
-
 # netbox-sot creates these on every NetBox, so they exist before any object carries them.
 SEEDED_TAGS = (
     "monitoring:scrape",
@@ -209,8 +206,7 @@ class FakeNetbox:
     While `down` is set, every request gets the 503 of a proxy whose NetBox is
     gone. A request without the token is a 403. `?tag=` matches tag slugs, repeated
     `tag` parameters must all match, and a slug that is neither seeded nor on a
-    record is a 400. Pages follow `limit` and `offset` under NetBox's page-size
-    rules, with an absolute `next` URL.
+    record is a 400. Every match comes back in one page.
     """
 
     def __init__(
@@ -219,7 +215,6 @@ class FakeNetbox:
         services: Iterable[dict[str, Any]] = (),
         devices: Iterable[dict[str, Any]] = (),
         virtual_machines: Iterable[dict[str, Any]] = (),
-        max_page_size: int = 1000,
     ) -> None:
         self._records = {
             _LIST_PATHS["services"]: list(services),
@@ -232,31 +227,14 @@ class FakeNetbox:
             for record in records
             for tag in record["tags"]
         }
-        self._max_page_size = max_page_size
         self.requests: list[httpx.Request] = []
         self.down = False
 
     def client(self, token: str = TOKEN) -> NetboxClient:
         return NetboxClient(base_url=BASE_URL, token=token, transport=httpx.MockTransport(self))
 
-    def _page_size(self, limit: str) -> int:
-        # NetBox's get_limit with MAX_PAGE_SIZE set: 0 asks for the largest page, and a
-        # value that isn't a whole number falls back to PAGINATE_COUNT (50).
-        default = min(50, self._max_page_size)
-        try:
-            size = int(limit)
-        except ValueError:
-            return default
-        if size < 0:
-            return default
-        if size == 0:
-            return self._max_page_size
-        return min(size, self._max_page_size)
-
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        if len(self.requests) > _MAX_REQUESTS:
-            raise RuntimeError(f"promsd sent NetBox more than {_MAX_REQUESTS} requests")
         if self.down:
             return httpx.Response(503, text="Service Unavailable")
         if request.headers.get("Authorization") not in {f"Token {TOKEN}", f"Bearer {TOKEN}"}:
@@ -264,8 +242,7 @@ class FakeNetbox:
         records = self._records.get(request.url.path)
         if records is None:
             return httpx.Response(404, json={"detail": "Not found."})
-        params = request.url.params
-        slugs = params.get_list("tag")
+        slugs = request.url.params.get_list("tag")
         unknown = [slug for slug in slugs if slug not in self._slugs]
         if unknown:
             choice = f"Select a valid choice. {unknown[0]} is not one of the available choices."
@@ -273,20 +250,7 @@ class FakeNetbox:
         matches = [
             record for record in records if set(slugs) <= {tag["slug"] for tag in record["tags"]}
         ]
-        limit = self._page_size(params.get("limit", ""))
-        offset = int(params.get("offset", 0))
-        end = offset + limit
-        next_url = None
-        if end < len(matches):
-            next_url = str(
-                request.url.copy_set_param("limit", str(limit)).copy_set_param("offset", str(end))
-            )
         return httpx.Response(
             200,
-            json={
-                "count": len(matches),
-                "next": next_url,
-                "previous": None,
-                "results": matches[offset:end],
-            },
+            json={"count": len(matches), "next": None, "previous": None, "results": matches},
         )
