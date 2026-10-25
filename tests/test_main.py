@@ -9,28 +9,7 @@ from fastapi.testclient import TestClient
 from dmf_promsd import __version__
 from dmf_promsd.main import create_app
 from dmf_promsd.settings import Settings
-from tests.conftest import StaticCache
-from tests.netbox45 import BASE_URL, TOKEN, FakeNetbox, device
-
-
-def test_health_and_readiness_endpoints_use_cache_state():
-    cache = StaticCache(
-        snapshot_payloads=[{"targets": ["dmf.example.com:9100"], "labels": {"app": "encoder"}}],
-    )
-    app = create_app(
-        settings=Settings(netbox_url="https://dmf.example.com", netbox_token="token"),
-        cache=cache,
-    )
-    client = TestClient(app)
-
-    health = client.get("/healthz")
-    ready = client.get("/readyz")
-    scrape = client.get("/sd/scrape")
-
-    assert health.status_code == 200
-    assert health.json()["product"] == "DMF PromSD"
-    assert ready.status_code == 200
-    assert scrape.json() == [{"targets": ["dmf.example.com:9100"], "labels": {"app": "encoder"}}]
+from tests.netbox45 import BASE_URL, TOKEN, FakeNetbox, device, service, virtual_machine
 
 
 def test_create_app_requires_netbox_settings_when_no_cache_is_injected():
@@ -159,3 +138,75 @@ def test_netbox_outage_keeps_the_last_good_lanes_until_it_recovers():
         "version": __version__,
     }
     assert recovered["last_error"] is None
+
+
+# Each lane serves every record kind it covers, so the cache must fetch each kind for each lane.
+def test_each_lane_serves_every_record_kind_it_covers():
+    # One lane tag per record, so the test notices when the cache stops querying a lane's tag.
+    scraped_vm = virtual_machine(
+        "k3s-node-1",
+        ["monitoring:scrape"],
+        site_slug="dc-a",
+        address="198.51.100.11/24",
+        metrics_port=9100,
+    )
+    netbox = FakeNetbox(
+        services=[
+            service(
+                "prometheus",
+                ["monitoring:scrape"],
+                parent=scraped_vm,
+                cluster_service="prometheus",
+                cluster_namespace="monitoring",
+                metrics_port=9090,
+            ),
+            service(
+                "grafana",
+                ["monitoring:probe"],
+                parent=scraped_vm,
+                cluster_service="grafana",
+                cluster_namespace="monitoring",
+                cluster_port=3000,
+            ),
+        ],
+        devices=[
+            device("node-1", ["monitoring:scrape"], address="192.0.2.11/24", metrics_port=9100),
+            device("encoder-1", ["monitoring:probe"], address="192.0.2.21/24", probe_module="icmp"),
+            device("switch-1", ["monitoring:snmp"], address="192.0.2.31/24"),
+        ],
+        virtual_machines=[
+            scraped_vm,
+            virtual_machine(
+                "media-vm-1",
+                ["monitoring:probe"],
+                site_slug="dc-a",
+                address="198.51.100.21/24",
+                probe_module="icmp",
+            ),
+        ],
+    )
+    client = netbox.client()
+    app = create_app(Settings(netbox_url=BASE_URL, netbox_token=TOKEN), client=client)
+    try:
+        with TestClient(app) as http:
+            responses = {lane: http.get(f"/sd/{lane}") for lane in ("scrape", "probe", "snmp")}
+    finally:
+        client.close()
+
+    for response in responses.values():
+        assert response.status_code == 200
+        # Prometheus HTTP SD refuses a response of any other media type.
+        assert response.headers["content-type"] == "application/json"
+    served = {
+        lane: {target for group in response.json() for target in group["targets"]}
+        for lane, response in responses.items()
+    }
+    assert served == {
+        "scrape": {
+            "prometheus.monitoring.svc.cluster.local:9090",
+            "192.0.2.11:9100",
+            "198.51.100.11:9100",
+        },
+        "probe": {"grafana.monitoring.svc.cluster.local:3000", "192.0.2.21", "198.51.100.21"},
+        "snmp": {"192.0.2.31"},
+    }
