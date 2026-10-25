@@ -4,6 +4,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from dmf_promsd.cache import CacheSnapshot, CacheState
+
 
 @dataclass
 class FakeSequenceClient:
@@ -30,15 +32,14 @@ class FakeSequenceClient:
 @dataclass
 class StaticCache:
     snapshot_payloads: list[dict[str, Any]]
-    readiness: tuple[int, dict[str, Any]]
-    health: dict[str, Any]
+    ttl_seconds: int = 45
+    refresh_hint: str = "30s"
+    freshness_window_seconds: int = 90
     _managed: bool = False
 
-    def health_payload(self) -> dict[str, Any]:
-        return self.health
-
-    def ready_payload(self) -> tuple[int, dict[str, Any]]:
-        return self.readiness
+    def state(self) -> CacheState:
+        snapshot = CacheSnapshot(refreshed_at=0.0, lanes={}, skipped={}, source_counts={})
+        return CacheState(snapshot=snapshot, age_seconds=0.0, fresh=True, last_error=None)
 
     def lane_payload(self, lane: str) -> list[dict[str, Any]]:
         return self.snapshot_payloads

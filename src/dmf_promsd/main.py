@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -11,6 +12,34 @@ from .cache import PromSDCache
 from .netbox import NetboxClient
 from .sd import LANES
 from .settings import Settings, load_settings
+
+
+def _health_payload(cache: PromSDCache) -> dict[str, Any]:
+    state = cache.state()
+    return {
+        "status": "ok",
+        "cache_ttl_seconds": cache.ttl_seconds,
+        "http_sd_refresh": cache.refresh_hint,
+        "freshness_window_seconds": cache.freshness_window_seconds,
+        "snapshot_age_seconds": state.age_seconds,
+        "source_counts": state.snapshot.source_counts if state.snapshot else {},
+        "last_error": state.last_error,
+    }
+
+
+def _ready_payload(cache: PromSDCache) -> tuple[int, dict[str, Any]]:
+    state = cache.state()
+    if state.snapshot is None:
+        return 503, {"status": "stale", "ready": False, "reason": "no snapshot"}
+    status_code = 200 if state.fresh else 503
+    payload = {
+        "status": "ready" if state.fresh else "stale",
+        "ready": state.fresh,
+        "snapshot_age_seconds": state.age_seconds,
+        "freshness_window_seconds": cache.freshness_window_seconds,
+        "last_error": state.last_error,
+    }
+    return status_code, payload
 
 
 def _serve_lane(app: FastAPI, lane: str) -> None:
@@ -74,13 +103,13 @@ def create_app(
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> JSONResponse:
-        payload = app.state.cache.health_payload()
-        payload.update({"status": "ok", "product": "DMF PromSD", "version": __version__})
+        payload = _health_payload(app.state.cache)
+        payload.update({"product": "DMF PromSD", "version": __version__})
         return JSONResponse(payload)
 
     @app.get("/readyz", include_in_schema=False)
     async def readyz() -> JSONResponse:
-        status_code, payload = app.state.cache.ready_payload()
+        status_code, payload = _ready_payload(app.state.cache)
         payload.update({"product": "DMF PromSD", "version": __version__})
         return JSONResponse(payload, status_code=status_code)
 
