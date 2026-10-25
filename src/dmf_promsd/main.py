@@ -13,6 +13,8 @@ from .netbox import NetboxClient
 from .sd import LANES
 from .settings import Settings, load_settings
 
+_PRODUCT = "DMF PromSD"
+
 
 def _health_payload(cache: PromSDCache, refresh_hint: str) -> dict[str, Any]:
     state = cache.state()
@@ -82,7 +84,7 @@ def create_app(
                 own_client.close()
 
     app = FastAPI(
-        title="DMF PromSD",
+        title=_PRODUCT,
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
@@ -95,13 +97,13 @@ def create_app(
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> JSONResponse:
         payload = _health_payload(app.state.cache, app.state.settings.http_sd_refresh)
-        payload.update({"product": "DMF PromSD", "version": __version__})
+        payload.update({"product": _PRODUCT, "version": __version__})
         return JSONResponse(payload)
 
     @app.get("/readyz", include_in_schema=False)
     async def readyz() -> JSONResponse:
         status_code, payload = _ready_payload(app.state.cache)
-        payload.update({"product": "DMF PromSD", "version": __version__})
+        payload.update({"product": _PRODUCT, "version": __version__})
         return JSONResponse(payload, status_code=status_code)
 
     for lane in LANES:
