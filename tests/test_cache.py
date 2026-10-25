@@ -27,12 +27,8 @@ def test_cache_refresh_updates_snapshot_and_readiness():
         return clock_value[0]
 
     client = FakeSequenceClient(
-        # 2 entries per refresh: the cache queries each monitoring tag separately
-        # (scrape, probe) and unions by id; same id within a refresh => 1 service.
         services=[
             [_service("dmf.example.com", 9100)],
-            [_service("dmf.example.com", 9100)],
-            [_service("dmf.example.com", 9200)],
             [_service("dmf.example.com", 9200)],
         ],
         devices=[[]],

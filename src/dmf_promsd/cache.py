@@ -63,27 +63,14 @@ class PromSDCache:
         while not self._stop.wait(self._ttl_seconds):
             self.refresh()
 
-    @staticmethod
-    def _fetch_union(list_fn, tags):
-        # NetBox ?tag= filters are ANDed; query each tag separately and union by
-        # id so an object tagged with ANY monitoring lane is included (OR).
-        merged: dict[Any, dict[str, Any]] = {}
-        for tag in tags:
-            for obj in list_fn(tags=(tag,)):
-                merged[obj.get("id", id(obj))] = obj
-        return list(merged.values())
-
     def refresh(self) -> bool:
         try:
-            services = self._fetch_union(
-                self._client.list_services, ("monitoring:scrape", "monitoring:probe")
+            services = self._client.list_services(tags=("monitoring:scrape", "monitoring:probe"))
+            devices = self._client.list_devices(
+                tags=("monitoring:scrape", "monitoring:probe", "monitoring:snmp")
             )
-            devices = self._fetch_union(
-                self._client.list_devices,
-                ("monitoring:scrape", "monitoring:probe", "monitoring:snmp"),
-            )
-            virtual_machines = self._fetch_union(
-                self._client.list_virtual_machines, ("monitoring:scrape", "monitoring:probe")
+            virtual_machines = self._client.list_virtual_machines(
+                tags=("monitoring:scrape", "monitoring:probe")
             )
             payloads, skipped, source_counts = build_payloads(services, devices, virtual_machines)
         except Exception as exc:
