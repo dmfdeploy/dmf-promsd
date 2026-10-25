@@ -206,7 +206,8 @@ def service(
 class FakeNetbox:
     """The three list endpoints promsd calls, answering as NetBox v4.5.0 does.
 
-    A request without the token is a 403. `?tag=` matches tag slugs, repeated
+    While `down` is set, every request gets the 503 of a proxy whose NetBox is
+    gone. A request without the token is a 403. `?tag=` matches tag slugs, repeated
     `tag` parameters must all match, and a slug that is neither seeded nor on a
     record is a 400. Pages follow `limit` and `offset` under NetBox's page-size
     rules, with an absolute `next` URL.
@@ -233,6 +234,7 @@ class FakeNetbox:
         }
         self._max_page_size = max_page_size
         self.requests: list[httpx.Request] = []
+        self.down = False
 
     def client(self, token: str = TOKEN) -> NetboxClient:
         return NetboxClient(base_url=BASE_URL, token=token, transport=httpx.MockTransport(self))
@@ -255,6 +257,8 @@ class FakeNetbox:
         self.requests.append(request)
         if len(self.requests) > _MAX_REQUESTS:
             raise RuntimeError(f"promsd sent NetBox more than {_MAX_REQUESTS} requests")
+        if self.down:
+            return httpx.Response(503, text="Service Unavailable")
         if request.headers.get("Authorization") not in {f"Token {TOKEN}", f"Bearer {TOKEN}"}:
             return httpx.Response(403, json={"detail": "Invalid v1 token"})
         records = self._records.get(request.url.path)
