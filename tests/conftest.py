@@ -33,7 +33,6 @@ class FakeSequenceClient:
 class StaticCache:
     snapshot_payloads: list[dict[str, Any]]
     ttl_seconds: int = 45
-    refresh_hint: str = "30s"
     freshness_window_seconds: int = 90
 
     def state(self) -> CacheState:

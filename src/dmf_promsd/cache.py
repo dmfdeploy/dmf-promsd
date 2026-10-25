@@ -31,14 +31,12 @@ class PromSDCache:
         self,
         *,
         client: NetboxClient,
-        ttl_seconds: int = 45,
-        refresh_hint: str = "30s",
+        ttl_seconds: int,
         freshness_window_seconds: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = client
         self.ttl_seconds = ttl_seconds
-        self.refresh_hint = refresh_hint
         self.freshness_window_seconds = freshness_window_seconds or (ttl_seconds * 2)
         self._clock = clock
         self._lock = threading.RLock()
