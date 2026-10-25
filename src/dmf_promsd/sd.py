@@ -95,7 +95,7 @@ def _extract_address(value: Any) -> str | None:
     return None
 
 
-def _extract_site(data: Mapping[str, Any]) -> str | None:  # noqa: C901, one branch per shape the site field arrives in
+def _extract_site(data: Mapping[str, Any]) -> str | None:  # noqa: C901, dmfdeploy/dmfdeploy#766 cuts it to the site slug
     for key in ("site",):
         candidate = data.get(key)
         if isinstance(candidate, Mapping):
