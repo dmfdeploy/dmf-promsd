@@ -21,7 +21,8 @@ python -m pip install -e '.[dev]'
 scripts/check.sh
 ```
 
-`scripts/check.sh` runs `ruff format --check`, `ruff check`, and `pytest`.
+`scripts/check.sh` fails on any tracked Python file over 400 lines, then runs
+`ruff format --check`, `ruff check`, and `pytest`.
 
 Run `bin/install-hooks.sh` once per clone. `scripts/publish-to-ghcr.sh` builds
 the image; `--push` publishes it.
