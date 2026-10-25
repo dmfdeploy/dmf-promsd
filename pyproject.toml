@@ -38,6 +38,8 @@ select = [
   "E", "F", "I", "UP", "B", "SIM",
   # Blind excepts, blanket noqa comments, and unused noqa codes.
   "BLE001", "PGH004", "RUF100",
+  # Complexity, branches, arguments, and statements, at ruff's default limits.
+  "C901", "PLR0912", "PLR0913", "PLR0915",
 ]
 
 [tool.pytest.ini_options]
