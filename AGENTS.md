@@ -18,9 +18,10 @@ Python 3.12 or later. CI (`.github/workflows/ci.yml`) runs:
 
 ```sh
 python -m pip install -e '.[dev]'
-ruff check .
-pytest -q
+scripts/check.sh
 ```
+
+`scripts/check.sh` runs `ruff format --check`, `ruff check`, and `pytest`.
 
 Run `bin/install-hooks.sh` once per clone. `scripts/publish-to-ghcr.sh` builds
 the image; `--push` publishes it.
