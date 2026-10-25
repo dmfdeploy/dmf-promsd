@@ -9,7 +9,14 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from . import __version__
 from .cache import PromSDCache
 from .netbox import NetboxClient
+from .sd import LANES
 from .settings import Settings, load_settings
+
+
+def _serve_lane(app: FastAPI, lane: str) -> None:
+    @app.get(f"/sd/{lane}", include_in_schema=False, name=f"sd_{lane}")
+    async def sd() -> JSONResponse:
+        return JSONResponse(app.state.cache.lane_payload(lane))
 
 
 def create_app(
@@ -77,16 +84,7 @@ def create_app(
         payload.update({"product": "DMF PromSD", "version": __version__})
         return JSONResponse(payload, status_code=status_code)
 
-    @app.get("/sd/scrape", include_in_schema=False)
-    async def sd_scrape() -> JSONResponse:
-        return JSONResponse(app.state.cache.lane_payload("scrape"))
-
-    @app.get("/sd/probe", include_in_schema=False)
-    async def sd_probe() -> JSONResponse:
-        return JSONResponse(app.state.cache.lane_payload("probe"))
-
-    @app.get("/sd/snmp", include_in_schema=False)
-    async def sd_snmp() -> JSONResponse:
-        return JSONResponse(app.state.cache.lane_payload("snmp"))
+    for lane in LANES:
+        _serve_lane(app, lane.name)
 
     return app

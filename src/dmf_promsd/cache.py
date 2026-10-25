@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .netbox import NetboxClient
-from .sd import build_payloads
+from .sd import LANES, RECORD_KINDS, build_payloads
 
 
 @dataclass(frozen=True)
@@ -65,14 +65,13 @@ class PromSDCache:
 
     def refresh(self) -> bool:
         try:
-            services = self._client.list_services(tags=("monitoring:scrape", "monitoring:probe"))
-            devices = self._client.list_devices(
-                tags=("monitoring:scrape", "monitoring:probe", "monitoring:snmp")
-            )
-            virtual_machines = self._client.list_virtual_machines(
-                tags=("monitoring:scrape", "monitoring:probe")
-            )
-            payloads, skipped, source_counts = build_payloads(services, devices, virtual_machines)
+            records = {
+                kind: self._client.list_tagged(
+                    kind, [lane.tag for lane in LANES if kind in lane.kinds]
+                )
+                for kind in RECORD_KINDS
+            }
+            payloads, skipped, source_counts = build_payloads(records)
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)

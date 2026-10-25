@@ -36,7 +36,7 @@ def test_netbox_client_paginates_and_uses_token_auth():
     )
 
     try:
-        results = client.list_services(tags=("monitoring:scrape",))
+        results = client.list_tagged("services", ("monitoring:scrape",))
     finally:
         client.close()
 

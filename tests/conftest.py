@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,14 +20,8 @@ class FakeSequenceClient:
             return series[0]
         return series.pop(0)
 
-    def list_services(self, *, tags: tuple[str, ...]) -> list[dict[str, Any]]:
-        return self._next(self.services, f"services:{','.join(tags)}")
-
-    def list_devices(self, *, tags: tuple[str, ...]) -> list[dict[str, Any]]:
-        return self._next(self.devices, f"devices:{','.join(tags)}")
-
-    def list_virtual_machines(self, *, tags: tuple[str, ...]) -> list[dict[str, Any]]:
-        return self._next(self.virtual_machines, f"virtual_machines:{','.join(tags)}")
+    def list_tagged(self, kind: str, tags: Iterable[str]) -> list[dict[str, Any]]:
+        return self._next(getattr(self, kind), f"{kind}:{','.join(tags)}")
 
     def close(self) -> None:
         return None

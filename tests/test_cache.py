@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from dmf_promsd.cache import PromSDCache
 from tests.conftest import FakeSequenceClient
 
@@ -53,7 +55,7 @@ def test_cache_refresh_updates_snapshot_and_readiness():
 
 def test_cache_health_reports_last_error_on_refresh_failure():
     class BrokenClient(FakeSequenceClient):
-        def list_services(self, *, tags: tuple[str, ...]) -> list[dict]:
+        def list_tagged(self, kind: str, tags: Iterable[str]) -> list[dict]:
             raise RuntimeError("netbox unavailable")
 
     cache = PromSDCache(
