@@ -58,35 +58,32 @@ def create_app(
     if not settings.configured and cache is None and client is None:
         raise RuntimeError("NETBOX_URL and NETBOX_TOKEN must be configured")
 
-    managed_client = client is None
-    managed_cache = cache is None
+    own_client = None
     if client is None and settings.configured:
-        client = NetboxClient(
+        client = own_client = NetboxClient(
             base_url=settings.netbox_url,
             token=settings.netbox_token,
             validate_certs=settings.netbox_validate_certs,
         )
+    own_cache = None
     if cache is None:
-        cache = PromSDCache(
+        cache = own_cache = PromSDCache(
             client=client,
             ttl_seconds=settings.cache_ttl_seconds,
             refresh_hint=settings.http_sd_refresh,
-            managed=managed_cache,
         )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        runtime_cache = app.state.cache
-        runtime_client = app.state.client
-        if getattr(runtime_cache, "_managed", False):
-            runtime_cache.start()
+        if own_cache is not None:
+            own_cache.start()
         try:
             yield
         finally:
-            if getattr(runtime_cache, "_managed", False):
-                runtime_cache.stop()
-            if runtime_client is not None and managed_client:
-                runtime_client.close()
+            if own_cache is not None:
+                own_cache.stop()
+            if own_client is not None:
+                own_client.close()
 
     app = FastAPI(
         title="DMF PromSD",

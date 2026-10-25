@@ -35,7 +35,6 @@ class StaticCache:
     ttl_seconds: int = 45
     refresh_hint: str = "30s"
     freshness_window_seconds: int = 90
-    _managed: bool = False
 
     def state(self) -> CacheState:
         snapshot = CacheSnapshot(refreshed_at=0.0, lanes={}, skipped={}, source_counts={})
