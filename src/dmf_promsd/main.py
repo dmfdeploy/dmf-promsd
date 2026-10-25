@@ -44,6 +44,20 @@ def _ready_payload(cache: PromSDCache) -> tuple[int, dict[str, Any]]:
     return status_code, payload
 
 
+def _serve_health(app: FastAPI) -> None:
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> JSONResponse:
+        payload = _health_payload(app.state.cache, app.state.settings.http_sd_refresh)
+        payload.update({"product": _PRODUCT, "version": __version__})
+        return JSONResponse(payload)
+
+    @app.get("/readyz", include_in_schema=False)
+    async def readyz() -> JSONResponse:
+        status_code, payload = _ready_payload(app.state.cache)
+        payload.update({"product": _PRODUCT, "version": __version__})
+        return JSONResponse(payload, status_code=status_code)
+
+
 def _serve_lane(app: FastAPI, lane: str) -> None:
     @app.get(f"/sd/{lane}", include_in_schema=False, name=f"sd_{lane}")
     async def sd() -> JSONResponse:
@@ -94,18 +108,7 @@ def create_app(
     app.state.cache = cache
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
-    @app.get("/healthz", include_in_schema=False)
-    async def healthz() -> JSONResponse:
-        payload = _health_payload(app.state.cache, app.state.settings.http_sd_refresh)
-        payload.update({"product": _PRODUCT, "version": __version__})
-        return JSONResponse(payload)
-
-    @app.get("/readyz", include_in_schema=False)
-    async def readyz() -> JSONResponse:
-        status_code, payload = _ready_payload(app.state.cache)
-        payload.update({"product": _PRODUCT, "version": __version__})
-        return JSONResponse(payload, status_code=status_code)
-
+    _serve_health(app)
     for lane in LANES:
         _serve_lane(app, lane.name)
 
