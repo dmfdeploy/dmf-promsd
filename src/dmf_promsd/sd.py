@@ -5,9 +5,10 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-MONITORING_SCRAPE_TAG = "monitoring:scrape"
-MONITORING_PROBE_TAG = "monitoring:probe"
-MONITORING_SNMP_TAG = "monitoring:snmp"
+SERVICES = "services"
+DEVICES = "devices"
+VIRTUAL_MACHINES = "virtual_machines"
+RECORD_KINDS = (SERVICES, DEVICES, VIRTUAL_MACHINES)
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,7 @@ def _record_address(record: MonitoredRecord) -> str | None:
     cluster_host = _cluster_service_host(data)
     if cluster_host:
         return cluster_host
-    if record.kind == "service":
+    if record.kind == SERVICES:
         return _extract_address(
             data.get("ip_address")
             or data.get("host")
@@ -142,7 +143,7 @@ def _record_address(record: MonitoredRecord) -> str | None:
             or data.get("device")
             or data.get("virtual_machine")
         )
-    if record.kind in {"device", "virtual-machine"}:
+    if record.kind in {DEVICES, VIRTUAL_MACHINES}:
         return _extract_address(
             data.get("primary_ip4") or data.get("ip_address") or data.get("host")
         )
@@ -152,7 +153,7 @@ def _record_address(record: MonitoredRecord) -> str | None:
 def _probe_target(record: MonitoredRecord) -> str | None:
     data = record.data
     cluster_host = _cluster_service_host(data)
-    if record.kind == "service":
+    if record.kind == SERVICES:
         if cluster_host:
             cluster_port = _stringify(_custom_fields(data).get("cluster_port"))
             if cluster_port:
@@ -182,109 +183,116 @@ def _group(target: str, labels: dict[str, str]) -> dict[str, Any]:
     return {"targets": [target], "labels": labels}
 
 
+def _scrape_target(record: MonitoredRecord, port: str) -> str | None:
+    target = _record_address(record)
+    if not target:
+        return None
+    return f"{target}:{port}"
+
+
+def _probe_target_with_path(record: MonitoredRecord, module: str) -> str | None:
+    target = _probe_target(record)
+    # ADR-0038 Amendment B: a URL path rides the target, so it only
+    # applies to http-prober modules — never tcp/icmp/snmp.
+    if target and module.startswith("http_"):
+        path = _normalize_probe_path(_custom_fields(record.data).get("probe_path"))
+        if path:
+            target = f"{target}{path}"
+    return target
+
+
+def _snmp_target(record: MonitoredRecord, module: str) -> str | None:
+    return _record_address(record)
+
+
+def _metrics_path_label(custom_fields: Mapping[str, Any], port: str) -> dict[str, str]:
+    return {"__metrics_path__": _stringify(custom_fields.get("metrics_path")) or "/metrics"}
+
+
+def _module_label(custom_fields: Mapping[str, Any], module: str) -> dict[str, str]:
+    return {"__param_module": module}
+
+
+@dataclass(frozen=True)
+class Lane:
+    name: str
+    tag: str
+    kinds: tuple[str, ...]
+    # The custom field this lane reads, and the skip reason when it is unset with no default.
+    field: str
+    missing: str
+    target: Callable[[MonitoredRecord, str], str | None]
+    labels: Callable[[Mapping[str, Any], str], dict[str, str]]
+    default: str | None = None
+
+
+LANES = (
+    Lane(
+        name="scrape",
+        tag="monitoring:scrape",
+        kinds=(SERVICES, DEVICES, VIRTUAL_MACHINES),
+        field="metrics_port",
+        missing="missing_metrics_port",
+        target=_scrape_target,
+        labels=_metrics_path_label,
+    ),
+    Lane(
+        name="probe",
+        tag="monitoring:probe",
+        kinds=(SERVICES, DEVICES, VIRTUAL_MACHINES),
+        field="probe_module",
+        missing="missing_module",
+        target=_probe_target_with_path,
+        labels=_module_label,
+    ),
+    Lane(
+        name="snmp",
+        tag="monitoring:snmp",
+        kinds=(DEVICES,),
+        field="snmp_module",
+        missing="missing_module",
+        target=_snmp_target,
+        labels=_module_label,
+        default="if_mib",
+    ),
+)
+
+
 def _build_lane(
-    records: Iterable[MonitoredRecord],
-    *,
-    tag: str,
-    module_field: str,
-    default_module: str | None = None,
-    target_resolver: Callable[[MonitoredRecord], str | None],
-    labels_resolver: Callable[[Mapping[str, Any]], dict[str, str]] = _common_labels,
-    path_field: str | None = None,
+    records: Iterable[MonitoredRecord], lane: Lane
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     groups: list[dict[str, Any]] = []
     skipped = Counter[str]()
     for record in records:
         data = record.data
-        if tag not in _tags(data):
+        if record.kind not in lane.kinds or lane.tag not in _tags(data):
             continue
         try:
             custom_fields = _custom_fields(data)
-            module = custom_fields.get(module_field)
-            module_text = _stringify(module) or default_module
-            if not module_text:
-                skipped["missing_module"] += 1
+            value = _stringify(custom_fields.get(lane.field)) or lane.default
+            if not value:
+                skipped[lane.missing] += 1
                 continue
-            target = target_resolver(record)
+            target = lane.target(record, value)
             if not target:
                 skipped["missing_target"] += 1
                 continue
-            # ADR-0038 Amendment B: a URL path rides the target, so it only
-            # applies to http-prober modules — never tcp/icmp/snmp.
-            if path_field and module_text.startswith("http_"):
-                path = _normalize_probe_path(custom_fields.get(path_field))
-                if path:
-                    target = f"{target}{path}"
-            labels = labels_resolver(data)
-            labels["__param_module"] = module_text
+            labels = _common_labels(data)
+            labels.update(lane.labels(custom_fields, value))
             groups.append(_group(target, labels))
         except Exception:
             skipped["invalid_object"] += 1
     return groups, dict(skipped)
 
 
-def _build_scrape_lane(
-    records: Iterable[MonitoredRecord],
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    groups: list[dict[str, Any]] = []
-    skipped = Counter[str]()
-    for record in records:
-        data = record.data
-        if MONITORING_SCRAPE_TAG not in _tags(data):
-            continue
-        try:
-            custom_fields = _custom_fields(data)
-            port = _stringify(custom_fields.get("metrics_port"))
-            if not port:
-                skipped["missing_metrics_port"] += 1
-                continue
-            target = _record_address(record)
-            if not target:
-                skipped["missing_target"] += 1
-                continue
-            labels = _common_labels(data)
-            metrics_path = _stringify(custom_fields.get("metrics_path")) or "/metrics"
-            labels["__metrics_path__"] = metrics_path
-            groups.append(_group(f"{target}:{port}", labels))
-        except Exception:
-            skipped["invalid_object"] += 1
-    return groups, dict(skipped)
-
-
 def build_payloads(
-    services: Iterable[Mapping[str, Any]],
-    devices: Iterable[Mapping[str, Any]],
-    virtual_machines: Iterable[Mapping[str, Any]],
+    records: Mapping[str, Iterable[Mapping[str, Any]]],
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, int]], dict[str, int]]:
-    services_list = list(services)
-    devices_list = list(devices)
-    virtual_machines_list = list(virtual_machines)
-    records = [
-        *(MonitoredRecord("service", item) for item in services_list),
-        *(MonitoredRecord("device", item) for item in devices_list),
-        *(MonitoredRecord("virtual-machine", item) for item in virtual_machines_list),
-    ]
-    scrape, scrape_skipped = _build_scrape_lane(records)
-    probe, probe_skipped = _build_lane(
-        records,
-        tag=MONITORING_PROBE_TAG,
-        module_field="probe_module",
-        target_resolver=_probe_target,
-        path_field="probe_path",
-    )
-    snmp_records = [record for record in records if record.kind == "device"]
-    snmp, snmp_skipped = _build_lane(
-        snmp_records,
-        tag=MONITORING_SNMP_TAG,
-        module_field="snmp_module",
-        default_module="if_mib",
-        target_resolver=_record_address,
-    )
-    payloads = {"scrape": scrape, "probe": probe, "snmp": snmp}
-    skipped = {"scrape": scrape_skipped, "probe": probe_skipped, "snmp": snmp_skipped}
-    source_counts = {
-        "services": len(services_list),
-        "devices": len(devices_list),
-        "virtual_machines": len(virtual_machines_list),
-    }
+    by_kind = {kind: list(records[kind]) for kind in RECORD_KINDS}
+    monitored = [MonitoredRecord(kind, item) for kind, items in by_kind.items() for item in items]
+    payloads: dict[str, list[dict[str, Any]]] = {}
+    skipped: dict[str, dict[str, int]] = {}
+    for lane in LANES:
+        payloads[lane.name], skipped[lane.name] = _build_lane(monitored, lane)
+    source_counts = {kind: len(items) for kind, items in by_kind.items()}
     return payloads, skipped, source_counts

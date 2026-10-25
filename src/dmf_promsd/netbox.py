@@ -11,6 +11,13 @@ def _tag_slug(name: str) -> str:
     return name.replace(":", "-")
 
 
+_LIST_PATHS = {
+    "services": "/api/ipam/services/",
+    "devices": "/api/dcim/devices/",
+    "virtual_machines": "/api/virtualization/virtual-machines/",
+}
+
+
 class NetboxAPIError(RuntimeError):
     def __init__(self, status_code: int, body: str) -> None:
         self.status_code = status_code
@@ -65,7 +72,8 @@ class NetboxClient:
             query = None
         return results
 
-    def _list_tagged(self, path: str, tags: Iterable[str]) -> list[dict[str, Any]]:
+    def list_tagged(self, kind: str, tags: Iterable[str]) -> list[dict[str, Any]]:
+        path = _LIST_PATHS[kind]
         # NetBox ?tag= filters are ANDed; query each tag separately and union by
         # id so an object tagged with ANY of the tags is included (OR).
         merged: dict[Any, dict[str, Any]] = {}
@@ -73,12 +81,3 @@ class NetboxClient:
             for obj in self._list_paginated(path, [("limit", "1000"), ("tag", _tag_slug(tag))]):
                 merged[obj.get("id", id(obj))] = obj
         return list(merged.values())
-
-    def list_services(self, *, tags: Iterable[str]) -> list[dict[str, Any]]:
-        return self._list_tagged("/api/ipam/services/", tags)
-
-    def list_devices(self, *, tags: Iterable[str]) -> list[dict[str, Any]]:
-        return self._list_tagged("/api/dcim/devices/", tags)
-
-    def list_virtual_machines(self, *, tags: Iterable[str]) -> list[dict[str, Any]]:
-        return self._list_tagged("/api/virtualization/virtual-machines/", tags)

@@ -3,6 +3,10 @@ from __future__ import annotations
 from dmf_promsd.sd import _extract_address, _strip_mask, build_payloads
 
 
+def _build_payloads(**records):
+    return build_payloads(records)
+
+
 def _service(**overrides):
     base = {
         "id": 1,
@@ -61,7 +65,7 @@ def _vm(**overrides):
 
 
 def test_build_payloads_shapes_all_lanes():
-    payloads, skipped, source_counts = build_payloads(
+    payloads, skipped, source_counts = _build_payloads(
         services=[_service()],
         devices=[_device()],
         virtual_machines=[_vm()],
@@ -129,7 +133,7 @@ def test_build_payloads_shapes_all_lanes():
 
 
 def test_cluster_service_uses_service_dns_name_and_port():
-    payloads, skipped, _ = build_payloads(
+    payloads, skipped, _ = _build_payloads(
         services=[
             _service(
                 custom_fields={
@@ -173,7 +177,7 @@ def test_cluster_service_uses_service_dns_name_and_port():
 
 
 def test_missing_required_fields_and_tagless_objects_are_skipped():
-    payloads, skipped, _ = build_payloads(
+    payloads, skipped, _ = _build_payloads(
         services=[
             _service(custom_fields={"metrics_path": "/metrics"}),
             _service(tags=[{"name": "app:encoder"}]),
@@ -206,7 +210,7 @@ def test_missing_required_fields_and_tagless_objects_are_skipped():
 
 
 def test_snmp_defaults_to_if_mib_when_module_is_unset():
-    payloads, skipped, _ = build_payloads(
+    payloads, skipped, _ = _build_payloads(
         services=[],
         devices=[_device(custom_fields={"probe_module": "icmp"})],
         virtual_machines=[],
@@ -236,7 +240,7 @@ def _probe_targets(payloads):
 
 
 def test_probe_path_appends_to_cluster_dns_target():
-    payloads, skipped, _ = build_payloads(
+    payloads, skipped, _ = _build_payloads(
         services=[
             _service(
                 custom_fields={
@@ -257,7 +261,7 @@ def test_probe_path_appends_to_cluster_dns_target():
 
 
 def test_probe_path_normalized_to_single_leading_slash():
-    payloads, _, _ = build_payloads(
+    payloads, _, _ = _build_payloads(
         services=[
             _service(
                 custom_fields={
@@ -284,7 +288,7 @@ def test_probe_path_absent_or_empty_leaves_target_unchanged():
         "cluster_port": 3000,
     }
     for extra in ({}, {"probe_path": ""}, {"probe_path": "   "}, {"probe_path": None}):
-        payloads, _, _ = build_payloads(
+        payloads, _, _ = _build_payloads(
             services=[_service(custom_fields={**base_fields, **extra})],
             devices=[],
             virtual_machines=[],
@@ -293,7 +297,7 @@ def test_probe_path_absent_or_empty_leaves_target_unchanged():
 
 
 def test_probe_path_appends_to_fallback_address_target():
-    payloads, _, _ = build_payloads(
+    payloads, _, _ = _build_payloads(
         services=[
             _service(
                 custom_fields={
@@ -311,7 +315,7 @@ def test_probe_path_appends_to_fallback_address_target():
 
 
 def test_probe_path_ignored_for_non_http_modules():
-    payloads, _, _ = build_payloads(
+    payloads, _, _ = _build_payloads(
         services=[
             _service(
                 custom_fields={
