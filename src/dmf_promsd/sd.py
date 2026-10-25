@@ -280,7 +280,7 @@ def _build_lane(
             labels = _common_labels(data)
             labels.update(lane.labels(custom_fields, value))
             groups.append(_group(target, labels))
-        except Exception:
+        except Exception:  # noqa: BLE001, a bad record is skipped and the lane still served
             skipped["invalid_object"] += 1
     return groups, dict(skipped)
 

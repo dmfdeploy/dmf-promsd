@@ -74,7 +74,7 @@ class PromSDCache:
                 for kind in RECORD_KINDS
             }
             payloads, skipped, source_counts = build_payloads(records)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001, a failed refresh keeps the last snapshot
             with self._lock:
                 self._last_error = str(exc)
             return False
