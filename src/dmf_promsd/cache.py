@@ -18,6 +18,14 @@ class CacheSnapshot:
     source_counts: dict[str, int]
 
 
+@dataclass(frozen=True)
+class CacheState:
+    snapshot: CacheSnapshot | None
+    age_seconds: float | None
+    fresh: bool
+    last_error: str | None
+
+
 class PromSDCache:
     def __init__(
         self,
@@ -31,9 +39,9 @@ class PromSDCache:
         managed: bool = True,
     ) -> None:
         self._client = client
-        self._ttl_seconds = ttl_seconds
-        self._refresh_hint = refresh_hint
-        self._freshness_window_seconds = freshness_window_seconds or (ttl_seconds * 2)
+        self.ttl_seconds = ttl_seconds
+        self.refresh_hint = refresh_hint
+        self.freshness_window_seconds = freshness_window_seconds or (ttl_seconds * 2)
         self._clock = clock
         self._sleeper = sleeper
         self._managed = managed
@@ -60,7 +68,7 @@ class PromSDCache:
         self._thread = None
 
     def _run(self) -> None:
-        while not self._stop.wait(self._ttl_seconds):
+        while not self._stop.wait(self.ttl_seconds):
             self.refresh()
 
     def refresh(self) -> bool:
@@ -92,43 +100,22 @@ class PromSDCache:
         with self._lock:
             return self._snapshot
 
-    def is_ready(self) -> bool:
-        snapshot = self.get_snapshot()
+    def state(self) -> CacheState:
+        with self._lock:
+            snapshot = self._snapshot
+            last_error = self._last_error
         if snapshot is None:
-            return False
-        return (self._clock() - snapshot.refreshed_at) <= self._freshness_window_seconds
+            return CacheState(snapshot=None, age_seconds=None, fresh=False, last_error=last_error)
+        age = self._clock() - snapshot.refreshed_at
+        return CacheState(
+            snapshot=snapshot,
+            age_seconds=age,
+            fresh=age <= self.freshness_window_seconds,
+            last_error=last_error,
+        )
 
     def lane_payload(self, lane: str) -> list[dict[str, Any]]:
         snapshot = self.get_snapshot()
         if snapshot is None:
             return []
         return snapshot.lanes.get(lane, [])
-
-    def health_payload(self) -> dict[str, Any]:
-        snapshot = self.get_snapshot()
-        age = None if snapshot is None else self._clock() - snapshot.refreshed_at
-        return {
-            "status": "ok",
-            "cache_ttl_seconds": self._ttl_seconds,
-            "http_sd_refresh": self._refresh_hint,
-            "freshness_window_seconds": self._freshness_window_seconds,
-            "snapshot_age_seconds": age,
-            "source_counts": snapshot.source_counts if snapshot else {},
-            "last_error": self._last_error,
-        }
-
-    def ready_payload(self) -> tuple[int, dict[str, Any]]:
-        snapshot = self.get_snapshot()
-        if snapshot is None:
-            return 503, {"status": "stale", "ready": False, "reason": "no snapshot"}
-        age = self._clock() - snapshot.refreshed_at
-        ready = age <= self._freshness_window_seconds
-        status_code = 200 if ready else 503
-        payload = {
-            "status": "ready" if ready else "stale",
-            "ready": ready,
-            "snapshot_age_seconds": age,
-            "freshness_window_seconds": self._freshness_window_seconds,
-            "last_error": self._last_error,
-        }
-        return status_code, payload

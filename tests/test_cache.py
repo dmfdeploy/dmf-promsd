@@ -41,16 +41,14 @@ def test_cache_refresh_updates_snapshot_and_readiness():
 
     assert cache.refresh() is True
     assert cache.lane_payload("scrape")[0]["targets"] == ["dmf.example.com:9100"]
-    assert cache.is_ready() is True
+    assert cache.state().fresh is True
 
     clock_value[0] = 1.0
     assert cache.refresh() is True
     assert cache.lane_payload("scrape")[0]["targets"] == ["dmf.example.com:9200"]
 
     clock_value[0] = 4.1
-    status_code, payload = cache.ready_payload()
-    assert status_code == 503
-    assert payload["ready"] is False
+    assert cache.state().fresh is False
 
 
 def test_cache_health_reports_last_error_on_refresh_failure():
@@ -65,5 +63,4 @@ def test_cache_health_reports_last_error_on_refresh_failure():
     )
 
     assert cache.refresh() is False
-    payload = cache.health_payload()
-    assert payload["last_error"] == "netbox unavailable"
+    assert cache.state().last_error == "netbox unavailable"
