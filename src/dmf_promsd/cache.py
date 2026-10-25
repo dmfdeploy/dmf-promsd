@@ -35,7 +35,6 @@ class PromSDCache:
         refresh_hint: str = "30s",
         freshness_window_seconds: int | None = None,
         clock: Callable[[], float] = time.monotonic,
-        sleeper: Callable[[float], None] = time.sleep,
         managed: bool = True,
     ) -> None:
         self._client = client
@@ -43,7 +42,6 @@ class PromSDCache:
         self.refresh_hint = refresh_hint
         self.freshness_window_seconds = freshness_window_seconds or (ttl_seconds * 2)
         self._clock = clock
-        self._sleeper = sleeper
         self._managed = managed
         self._lock = threading.RLock()
         self._stop = threading.Event()

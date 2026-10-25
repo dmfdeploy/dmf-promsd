@@ -25,8 +25,6 @@ class Settings:
     netbox_validate_certs: bool = True
     cache_ttl_seconds: int = 45
     http_sd_refresh: str = "30s"
-    bind_host: str = "0.0.0.0"
-    bind_port: int = 8000
 
     @property
     def configured(self) -> bool:
@@ -40,6 +38,4 @@ def load_settings() -> Settings:
         netbox_validate_certs=_env_bool("NETBOX_VALIDATE_CERTS", True),
         cache_ttl_seconds=_env_int("CACHE_TTL_SECONDS", 45),
         http_sd_refresh=os.getenv("HTTP_SD_REFRESH", "30s"),
-        bind_host=os.getenv("BIND_HOST", "0.0.0.0"),
-        bind_port=_env_int("BIND_PORT", 8000),
     )

@@ -67,8 +67,6 @@ def create_app(
             validate_certs=settings.netbox_validate_certs,
         )
     if cache is None:
-        if client is None:
-            raise RuntimeError("NetBox client is required when no cache is injected")
         cache = PromSDCache(
             client=client,
             ttl_seconds=settings.cache_ttl_seconds,
