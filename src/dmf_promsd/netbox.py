@@ -6,6 +6,11 @@ from typing import Any
 import httpx
 
 
+def _tag_slug(name: str) -> str:
+    # NetBox ?tag= filters by tag SLUG (colon -> hyphen), not the name.
+    return name.replace(":", "-")
+
+
 class NetboxAPIError(RuntimeError):
     def __init__(self, status_code: int, body: str) -> None:
         self.status_code = status_code
@@ -60,23 +65,20 @@ class NetboxClient:
             query = None
         return results
 
+    def _list_tagged(self, path: str, tags: Iterable[str]) -> list[dict[str, Any]]:
+        # NetBox ?tag= filters are ANDed; query each tag separately and union by
+        # id so an object tagged with ANY of the tags is included (OR).
+        merged: dict[Any, dict[str, Any]] = {}
+        for tag in tags:
+            for obj in self._list_paginated(path, [("limit", "1000"), ("tag", _tag_slug(tag))]):
+                merged[obj.get("id", id(obj))] = obj
+        return list(merged.values())
+
     def list_services(self, *, tags: Iterable[str]) -> list[dict[str, Any]]:
-        return self._list_paginated(
-            "/api/ipam/services/",
-            # NetBox ?tag= filters by tag SLUG (colon -> hyphen), not the name.
-            [("limit", "1000"), *[("tag", tag.replace(":", "-")) for tag in tags]],
-        )
+        return self._list_tagged("/api/ipam/services/", tags)
 
     def list_devices(self, *, tags: Iterable[str]) -> list[dict[str, Any]]:
-        return self._list_paginated(
-            "/api/dcim/devices/",
-            # NetBox ?tag= filters by tag SLUG (colon -> hyphen), not the name.
-            [("limit", "1000"), *[("tag", tag.replace(":", "-")) for tag in tags]],
-        )
+        return self._list_tagged("/api/dcim/devices/", tags)
 
     def list_virtual_machines(self, *, tags: Iterable[str]) -> list[dict[str, Any]]:
-        return self._list_paginated(
-            "/api/virtualization/virtual-machines/",
-            # NetBox ?tag= filters by tag SLUG (colon -> hyphen), not the name.
-            [("limit", "1000"), *[("tag", tag.replace(":", "-")) for tag in tags]],
-        )
+        return self._list_tagged("/api/virtualization/virtual-machines/", tags)
