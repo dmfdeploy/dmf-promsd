@@ -48,6 +48,7 @@ class RotationRecord:
     expires_at: int
     ttl_seconds: int
     last_successful_rotation_at: int | None
+    last_scheduled_success_at: int | None
     last_failure_at: int | None
     last_failure_reason_code: str | None
     latest_run_kind: str
@@ -65,6 +66,7 @@ _REQUIRED = {
     "expires_at",
     "ttl_seconds",
     "last_successful_rotation_at",
+    "last_scheduled_success_at",
     "last_failure_at",
     "last_failure_reason_code",
     "latest_run_kind",
@@ -165,6 +167,9 @@ def parse_record(payload: Any, expected_target: str) -> RotationRecord:
     last_success = _timestamp(
         value["last_successful_rotation_at"], "last_successful_rotation_at", nullable=True
     )
+    last_scheduled_success = _timestamp(
+        value["last_scheduled_success_at"], "last_scheduled_success_at", nullable=True
+    )
     failure_at, failure_reason = _failure_values(value)
     run_kind, run_outcome, latest_run_at = _latest_run(value, failure_at)
 
@@ -174,6 +179,7 @@ def parse_record(payload: Any, expected_target: str) -> RotationRecord:
         expires_at=expires_at,
         ttl_seconds=ttl_seconds,
         last_successful_rotation_at=last_success,
+        last_scheduled_success_at=last_scheduled_success,
         last_failure_at=failure_at,
         last_failure_reason_code=failure_reason,
         latest_run_kind=run_kind,
@@ -219,6 +225,12 @@ class OpenBaoObserver:
         self._last_success = Gauge(
             "dmf_openbao_approle_rotation_last_success_seconds",
             "Time of the last successful AppRole credential rotation.",
+            ("role", "target"),
+            registry=self._registry,
+        )
+        self._last_scheduled_success = Gauge(
+            "dmf_openbao_approle_rotation_last_scheduled_success_seconds",
+            "Time of the last successful scheduled AppRole rotation for this target.",
             ("role", "target"),
             registry=self._registry,
         )
@@ -269,6 +281,7 @@ class OpenBaoObserver:
             self._expires,
             self._ttl,
             self._last_success,
+            self._last_scheduled_success,
             self._last_failure,
             self._last_failure_timestamp,
             self._latest_run,
@@ -352,6 +365,10 @@ class OpenBaoObserver:
                 self._ttl.labels(*labels).set(record.ttl_seconds)
                 if record.last_successful_rotation_at is not None:
                     self._last_success.labels(*labels).set(record.last_successful_rotation_at)
+                if record.last_scheduled_success_at is not None:
+                    self._last_scheduled_success.labels(*labels).set(
+                        record.last_scheduled_success_at
+                    )
                 if record.last_failure_at is not None:
                     reason = record.last_failure_reason_code or "unknown"
                     self._last_failure.labels(*labels, reason).set(1)
