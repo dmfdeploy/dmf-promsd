@@ -4,12 +4,13 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from . import __version__
 from .cache import PromSDCache
 from .netbox import NetboxClient
+from .observer import OpenBaoObserver
 from .sd import LANES
 from .settings import Settings, load_settings
 
@@ -64,16 +65,7 @@ def _serve_lane(app: FastAPI, lane: str) -> None:
         return JSONResponse(app.state.cache.lane_payload(lane))
 
 
-def create_app(
-    settings: Settings | None = None,
-    *,
-    cache: PromSDCache | None = None,
-    client: NetboxClient | None = None,
-) -> FastAPI:
-    settings = settings or load_settings()
-    if not settings.configured and cache is None and client is None:
-        raise RuntimeError("NETBOX_URL and NETBOX_TOKEN must be configured")
-
+def _app_resources(settings, cache, client, observer):
     own_client = None
     if client is None and settings.configured:
         client = own_client = NetboxClient(
@@ -84,31 +76,65 @@ def create_app(
     own_cache = None
     if cache is None:
         cache = own_cache = PromSDCache(client=client, ttl_seconds=settings.cache_ttl_seconds)
+    own_observer = observer is None
+    if observer is None:
+        observer = OpenBaoObserver(settings.observer)
+    return client, cache, observer, own_client, own_cache, own_observer
 
+
+def _lifespan_for(own_cache, own_client, observer, own_observer):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if own_cache is not None:
             own_cache.start()
+        if own_observer:
+            observer.start()
         try:
             yield
         finally:
+            if own_observer:
+                observer.stop()
             if own_cache is not None:
                 own_cache.stop()
             if own_client is not None:
                 own_client.close()
 
+    return lifespan
+
+
+def create_app(
+    settings: Settings | None = None,
+    *,
+    cache: PromSDCache | None = None,
+    client: NetboxClient | None = None,
+    observer: OpenBaoObserver | None = None,
+) -> FastAPI:
+    settings = settings or load_settings()
+    if not settings.configured and cache is None and client is None:
+        raise RuntimeError("NETBOX_URL and NETBOX_TOKEN must be configured")
+    client, cache, observer, own_client, own_cache, own_observer = _app_resources(
+        settings, cache, client, observer
+    )
+
     app = FastAPI(
         title=_PRODUCT,
         docs_url=None,
         redoc_url=None,
-        lifespan=lifespan,
+        lifespan=_lifespan_for(own_cache, own_client, observer, own_observer),
     )
     app.state.settings = settings
     app.state.client = client
     app.state.cache = cache
+    app.state.observer = observer
     app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
     _serve_health(app)
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Response:
+        body, content_type = app.state.observer.render()
+        return Response(content=body, media_type=content_type)
+
     for lane in LANES:
         _serve_lane(app, lane.name)
 
