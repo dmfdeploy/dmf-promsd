@@ -33,6 +33,7 @@ def record(target: str = TARGET) -> dict[str, object]:
         "expires_at": issued_at + ttl_seconds,
         "ttl_seconds": ttl_seconds,
         "last_successful_rotation_at": 1_700_000_000,
+        "last_scheduled_success_at": 1_700_000_000,
         "last_failure_at": 1_699_999_000,
         "last_failure_reason_code": "delivery_failed",
         "latest_run_kind": "scheduled",
@@ -76,6 +77,7 @@ def test_parse_record_projects_only_safe_metric_fields():
     assert parsed.expires_at == 1_700_000_000 + TARGET_TTLS[TARGET]
     assert parsed.ttl_seconds == TARGET_TTLS[TARGET]
     assert parsed.latest_run_outcome == "success"
+    assert parsed.last_scheduled_success_at == 1_700_000_000
     sensitive_fields = ("secret_id_accessor", "actor", "request_id")
     assert not any(hasattr(parsed, field) for field in sensitive_fields)
 
@@ -92,6 +94,7 @@ def test_parse_record_projects_only_safe_metric_fields():
         lambda value: value.update(ttl_seconds=True),
         lambda value: value.update(unexpected_secret="SECRET_SENTINEL"),
         lambda value: value.update(last_failure_reason_code=[]),
+        lambda value: value.update(last_scheduled_success_at=0),
         lambda value: value.update(last_failure_at=None),
         lambda value: value.update(latest_run_outcome="failure"),
     ],
@@ -174,10 +177,34 @@ def test_poll_reads_only_fixed_paths_and_redacts_credentials_and_attribution(tmp
     assert all(token == "TOKEN_SENTINEL" for _, token in seen)
     assert 'dmf_openbao_approle_secret_id_expires_at_seconds{role="external-secrets"' in exposition
     assert "dmf_openbao_approle_rotation_last_failure{" in exposition
+    assert (
+        'dmf_openbao_approle_rotation_last_scheduled_success_seconds{role="external-secrets"'
+        in exposition
+    )
     assert 'role="external-secrets"' in exposition
     assert "dmf_openbao_approle_rotation_collector_success 1.0" in exposition
     assert all(sentinel not in exposition for sentinel in SENTINELS)
     assert "sensitive free text reason" not in exposition
+
+
+def test_missing_scheduled_heartbeat_is_not_exported(tmp_path):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"auth": {"client_token": "TOKEN_SENTINEL"}})
+        target = request.url.path.rsplit("/", 1)[-1]
+        value = record(target)
+        value["last_scheduled_success_at"] = None
+        return httpx.Response(200, json={"data": {"data": value}})
+
+    observer, client = make_observer(tmp_path, handler)
+    try:
+        observer.poll_once()
+        exposition = observer.render()[0].decode()
+    finally:
+        observer.stop()
+        client.close()
+
+    assert "dmf_openbao_approle_rotation_last_scheduled_success_seconds{" not in exposition
 
 
 def test_failed_metadata_poll_drops_old_success_series_and_hides_response_body(tmp_path):
