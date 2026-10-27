@@ -8,12 +8,11 @@ import httpx
 import pytest
 
 from dmf_promsd.observer import (
-    TARGET_ROLES,
-    TARGET_TTLS,
     MetadataError,
     OpenBaoObserver,
     parse_record,
 )
+from dmf_promsd.observer_metadata import TARGET_ROLES, TARGET_TTLS
 from dmf_promsd.settings import ObserverSettings
 
 TARGET = "external-secrets"
