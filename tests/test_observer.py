@@ -9,6 +9,7 @@ import pytest
 
 from dmf_promsd.observer import (
     TARGET_ROLES,
+    TARGET_TTLS,
     MetadataError,
     OpenBaoObserver,
     parse_record,
@@ -20,15 +21,17 @@ SENTINELS = ("ACCESSOR_SENTINEL", "JWT_SENTINEL", "ACTOR_SENTINEL", "REQUEST_SEN
 
 
 def record(target: str = TARGET) -> dict[str, object]:
+    issued_at = 1_700_000_000
+    ttl_seconds = TARGET_TTLS[target]
     return {
         "schema_version": 1,
         "target": target,
         "approle_name": TARGET_ROLES[target],
         "target_version": 2,
         "secret_id_accessor": SENTINELS[0],
-        "issued_at": 1_700_000_000,
-        "expires_at": 1_702_592_000,
-        "ttl_seconds": 2_592_000,
+        "issued_at": issued_at,
+        "expires_at": issued_at + ttl_seconds,
+        "ttl_seconds": ttl_seconds,
         "last_successful_rotation_at": 1_700_000_000,
         "last_failure_at": 1_699_999_000,
         "last_failure_reason_code": "delivery_failed",
@@ -49,12 +52,15 @@ def kv_response(target: str = TARGET) -> dict[str, object]:
 def make_observer(tmp_path: Path, handler, *, clock=lambda: 1_700_000_100):
     jwt_path = tmp_path / "jwt"
     jwt_path.write_text("JWT_SENTINEL", encoding="utf-8")
+    ca_path = tmp_path / "openbao-ca.crt"
+    ca_path.write_text("test CA bundle", encoding="utf-8")
     client = httpx.Client(transport=httpx.MockTransport(handler))
     observer = OpenBaoObserver(
         ObserverSettings(
             address="https://openbao.example.invalid",
             auth_role="dmf-promsd-observer",
             jwt_file=str(jwt_path),
+            ca_file=str(ca_path),
         ),
         client=client,
         clock=clock,
@@ -67,8 +73,8 @@ def test_parse_record_projects_only_safe_metric_fields():
 
     assert parsed.role == TARGET
     assert parsed.target == TARGET
-    assert parsed.expires_at == 1_702_592_000
-    assert parsed.ttl_seconds == 2_592_000
+    assert parsed.expires_at == 1_700_000_000 + TARGET_TTLS[TARGET]
+    assert parsed.ttl_seconds == TARGET_TTLS[TARGET]
     assert parsed.latest_run_outcome == "success"
     sensitive_fields = ("secret_id_accessor", "actor", "request_id")
     assert not any(hasattr(parsed, field) for field in sensitive_fields)
@@ -81,6 +87,8 @@ def test_parse_record_projects_only_safe_metric_fields():
         lambda value: value.update(target="unexpected-target"),
         lambda value: value.update(approle_name="unexpected-role"),
         lambda value: value.update(expires_at="secret-value"),
+        lambda value: value.update(issued_at=0),
+        lambda value: value.update(latest_run_at=0),
         lambda value: value.update(ttl_seconds=True),
         lambda value: value.update(unexpected_secret="SECRET_SENTINEL"),
         lambda value: value.update(last_failure_reason_code=[]),
@@ -102,6 +110,40 @@ def test_unknown_reason_code_is_bounded_to_unknown():
     parsed = parse_record({"data": {"data": value}}, TARGET)
 
     assert parsed.last_failure_reason_code == "unknown"
+
+
+@pytest.mark.parametrize("target", TARGET_TTLS)
+def test_parse_record_rejects_self_consistent_but_wrong_target_ttl(target):
+    value = record(target)
+    value["ttl_seconds"] = TARGET_TTLS[target] + 1
+    value["expires_at"] = value["issued_at"] + value["ttl_seconds"]
+
+    with pytest.raises(MetadataError, match="TTL"):
+        parse_record({"data": {"data": value}}, target)
+
+
+def test_openbao_http_client_uses_the_configured_ca_bundle(monkeypatch, tmp_path):
+    ca_path = tmp_path / "openbao-ca.crt"
+    ca_path.write_text("test CA bundle", encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    class FakeClient:
+        def close(self):
+            seen["closed"] = True
+
+    def fake_client(*, verify, timeout):
+        seen["verify"] = verify
+        seen["timeout"] = timeout
+        return FakeClient()
+
+    monkeypatch.setattr("dmf_promsd.observer.httpx.Client", fake_client)
+    observer = OpenBaoObserver(
+        ObserverSettings(address="https://openbao.example.invalid", ca_file=str(ca_path))
+    )
+    observer.stop()
+
+    assert seen["verify"] == str(ca_path)
+    assert seen["closed"] is True
 
 
 def test_poll_reads_only_fixed_paths_and_redacts_credentials_and_attribution(tmp_path):
