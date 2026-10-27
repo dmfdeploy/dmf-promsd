@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from dmf_promsd.netbox import parse_record
 from dmf_promsd.sd import build_payloads
 from tests.netbox45 import device, service, virtual_machine
 
 
-def _served(lane, *, services=(), devices=(), virtual_machines=()):
-    payloads, _, _ = build_payloads(
-        {"services": services, "devices": devices, "virtual_machines": virtual_machines}
-    )
+def _records(*, services=(), devices=(), virtual_machines=()):
+    kinds = {"services": services, "devices": devices, "virtual_machines": virtual_machines}
+    return [parse_record(kind, raw) for kind, raws in kinds.items() for raw in raws]
+
+
+def _served(lane, **records):
+    payloads, _ = build_payloads(_records(**records))
     # Prometheus ignores the order of target groups, so each target maps to its labels.
     return {target: group["labels"] for group in payloads[lane] for target in group["targets"]}
 
@@ -186,9 +190,9 @@ def test_snmp_lane_polls_devices_with_their_module():
 # A lane leaves out a record not tagged for it, missing the lane's field, or with no IP.
 def test_lanes_leave_out_records_they_cannot_target():
     node = virtual_machine("k3s-node-1", [], site_slug="dc-a", address="198.51.100.11/24")
-    payloads, _, _ = build_payloads(
-        {
-            "services": [
+    payloads, _ = build_payloads(
+        _records(
+            services=[
                 # Probe module cleared; the metrics port alone doesn't put it on the scrape lane.
                 service(
                     "legacy",
@@ -201,7 +205,7 @@ def test_lanes_leave_out_records_they_cannot_target():
                     probe_module=None,
                 ),
             ],
-            "devices": [
+            devices=[
                 # No metrics port. Its default probe and SNMP modules don't put it on those lanes.
                 device("build-1", ["monitoring:scrape"], address="192.0.2.61/24"),
                 # No primary IP, so no lane has an address for it.
@@ -211,8 +215,7 @@ def test_lanes_leave_out_records_they_cannot_target():
                     metrics_port=9100,
                 ),
             ],
-            "virtual_machines": [],
-        }
+        )
     )
 
     assert payloads == {"scrape": [], "probe": [], "snmp": []}

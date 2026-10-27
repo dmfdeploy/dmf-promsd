@@ -210,3 +210,25 @@ def test_each_lane_serves_every_record_kind_it_covers():
         "probe": {"grafana.monitoring.svc.cluster.local:3000", "192.0.2.21", "198.51.100.21"},
         "snmp": {"192.0.2.31"},
     }
+
+
+# A record promsd can't read is skipped, and the other records keep their targets.
+def test_a_record_promsd_cannot_read_costs_the_others_nothing():
+    good = device("node-1", ["monitoring:scrape"], address="192.0.2.11/24", metrics_port=9100)
+    bad = device(
+        "node-2", ["monitoring:scrape", "app:node"], address="192.0.2.12/24", metrics_port=9100
+    )
+    bad["tags"][1]["name"] = None
+    netbox = FakeNetbox(devices=[good, bad])
+    client = netbox.client()
+    app = create_app(Settings(netbox_url=BASE_URL, netbox_token=TOKEN), client=client)
+    try:
+        with TestClient(app) as http:
+            scrape = http.get("/sd/scrape").json()
+            health = http.get("/healthz").json()
+    finally:
+        client.close()
+
+    assert [group["targets"] for group in scrape] == [["192.0.2.11:9100"]]
+    assert health["source_counts"]["devices"] == 2
+    assert health["last_error"] is None
