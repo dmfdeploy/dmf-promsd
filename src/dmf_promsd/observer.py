@@ -19,6 +19,11 @@ TARGET_ROLES = {
     "object-storage-openbao-snapshots": "object-storage-openbao-snapshots",
     "object-storage-app-backups": "object-storage-app-backups",
 }
+TARGET_TTLS = {
+    "external-secrets": 2_592_000,
+    "object-storage-openbao-snapshots": 31_536_000,
+    "object-storage-app-backups": 31_536_000,
+}
 REASON_CODES = {
     "create_failed",
     "lookup_failed",
@@ -75,7 +80,7 @@ _REQUIRED = {
 def _timestamp(value: Any, field: str, *, nullable: bool = False) -> int | None:
     if nullable and value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise MetadataError(f"invalid {field}")
     return value
 
@@ -102,8 +107,6 @@ def _record_value(payload: Any, expected_target: str) -> dict[str, Any]:
         raise MetadataError("invalid accessor")
     if _timestamp(value["target_version"], "target_version") == 0:
         raise MetadataError("invalid target version")
-    if value["approle_name"] != TARGET_ROLES.get(expected_target):
-        raise MetadataError("metadata role mismatch")
     return value
 
 
@@ -114,6 +117,13 @@ def _expiry_values(value: dict[str, Any]) -> tuple[int, int]:
     if not ttl_seconds or expires_at <= issued_at or expires_at - issued_at != ttl_seconds:
         raise MetadataError("inconsistent expiry")
     return expires_at, ttl_seconds
+
+
+def _validate_target_contract(value: dict[str, Any], expected_target: str) -> None:
+    if value["approle_name"] != TARGET_ROLES.get(expected_target):
+        raise MetadataError("metadata role mismatch")
+    if value["ttl_seconds"] != TARGET_TTLS.get(expected_target):
+        raise MetadataError("metadata TTL mismatch")
 
 
 def _failure_values(value: dict[str, Any]) -> tuple[int | None, str | None]:
@@ -150,6 +160,7 @@ def _latest_run(value: dict[str, Any], failure_at: int | None) -> tuple[str, str
 def parse_record(payload: Any, expected_target: str) -> RotationRecord:
     """Validate a KV-v2 response and return only fields needed for safe metrics."""
     value = _record_value(payload, expected_target)
+    _validate_target_contract(value, expected_target)
     expires_at, ttl_seconds = _expiry_values(value)
     last_success = _timestamp(
         value["last_successful_rotation_at"], "last_successful_rotation_at", nullable=True
@@ -182,7 +193,8 @@ class OpenBaoObserver:
         clock: Any = time.time,
     ) -> None:
         self.settings = settings
-        self._client = client or httpx.Client(verify=True, timeout=10.0)
+        verify = settings.ca_file if settings.configured else True
+        self._client = client or httpx.Client(verify=verify, timeout=10.0)
         self._owns_client = client is None
         self._clock = clock
         self._token = ""

@@ -75,6 +75,9 @@ The service reads these environment variables:
   `dmf-promsd-observer`.
 - `OPENBAO_SA_JWT_FILE` is the projected service-account token file. The
   default is the Kubernetes pod token path.
+- `OPENBAO_CA_FILE` is the mounted CA certificate bundle used to verify the
+  OpenBao server certificate. The observer stays inactive when this file is
+  unset or missing; it does not disable certificate verification.
 - `OPENBAO_OBSERVER_INTERVAL_SECONDS` controls metadata polling. The default
   is `60`; supported values are 10 through 3600 seconds.
 
