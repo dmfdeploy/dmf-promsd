@@ -17,19 +17,8 @@ class MonitoredRecord:
     data: Mapping[str, Any]
 
 
-def _tag_name(tag: Any) -> str:
-    if isinstance(tag, str):
-        return tag
-    if isinstance(tag, Mapping):
-        name = tag.get("name")
-        if isinstance(name, str):
-            return name
-    return ""
-
-
 def _tags(data: Mapping[str, Any]) -> set[str]:
-    raw_tags = data.get("tags") or ()
-    return {name for name in (_tag_name(tag) for tag in raw_tags) if name}
+    return {tag["name"] for tag in data["tags"]}
 
 
 def _first_tag_suffix(data: Mapping[str, Any], prefix: str) -> str | None:
@@ -56,21 +45,8 @@ def _stringify(value: Any) -> str | None:
     return str(value).strip() or None
 
 
-def _strip_mask(value: str | None) -> str | None:
-    if not value:
-        return None
-    return value.split("/", 1)[0].strip() or None
-
-
-def _custom_fields(data: Mapping[str, Any]) -> Mapping[str, Any]:
-    custom_fields = data.get("custom_fields")
-    if isinstance(custom_fields, Mapping):
-        return custom_fields
-    return {}
-
-
 def _cluster_service_host(data: Mapping[str, Any]) -> str | None:
-    custom_fields = _custom_fields(data)
+    custom_fields = data["custom_fields"]
     service = _stringify(custom_fields.get("cluster_service"))
     namespace = _stringify(custom_fields.get("cluster_namespace"))
     if service and namespace:
@@ -78,44 +54,9 @@ def _cluster_service_host(data: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _extract_address(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return _strip_mask(value)
-    if isinstance(value, Mapping):
-        for key in ("address", "host", "name", "value"):
-            candidate = _extract_address(value.get(key))
-            if candidate:
-                return candidate
-        for key in ("primary_ip4", "ip_address", "device", "virtual_machine"):
-            candidate = _extract_address(value.get(key))
-            if candidate:
-                return candidate
-    return None
-
-
-def _extract_site(data: Mapping[str, Any]) -> str | None:  # noqa: C901, dmfdeploy/dmfdeploy#766 cuts it to the site slug
-    for key in ("site",):
-        candidate = data.get(key)
-        if isinstance(candidate, Mapping):
-            for site_key in ("slug", "name"):
-                value = _stringify(candidate.get(site_key))
-                if value:
-                    return value
-        value = _stringify(candidate)
-        if value:
-            return value
-    for relation_key in ("device", "virtual_machine"):
-        relation = data.get(relation_key)
-        if isinstance(relation, Mapping):
-            site = relation.get("site")
-            if isinstance(site, Mapping):
-                for site_key in ("slug", "name"):
-                    value = _stringify(site.get(site_key))
-                    if value:
-                        return value
-    return None
+def _site_slug(data: Mapping[str, Any]) -> str | None:
+    site = data.get("site")
+    return site["slug"] if site else None
 
 
 def _common_labels(data: Mapping[str, Any]) -> dict[str, str]:
@@ -124,7 +65,7 @@ def _common_labels(data: Mapping[str, Any]) -> dict[str, str]:
         value = _first_tag_suffix(data, prefix)
         if value:
             labels[prefix] = value
-    site = _extract_site(data)
+    site = _site_slug(data)
     if site:
         labels["site"] = site
     return labels
@@ -136,18 +77,9 @@ def _record_address(record: MonitoredRecord) -> str | None:
     if cluster_host:
         return cluster_host
     if record.kind == SERVICES:
-        return _extract_address(
-            data.get("ip_address")
-            or data.get("host")
-            or data.get("primary_ip4")
-            or data.get("device")
-            or data.get("virtual_machine")
-        )
-    if record.kind in {DEVICES, VIRTUAL_MACHINES}:
-        return _extract_address(
-            data.get("primary_ip4") or data.get("ip_address") or data.get("host")
-        )
-    return None
+        return None
+    primary_ip4 = data["primary_ip4"]
+    return primary_ip4["address"].split("/", 1)[0] if primary_ip4 else None
 
 
 def _probe_target(record: MonitoredRecord) -> str | None:
@@ -155,13 +87,13 @@ def _probe_target(record: MonitoredRecord) -> str | None:
     cluster_host = _cluster_service_host(data)
     if record.kind == SERVICES:
         if cluster_host:
-            cluster_port = _stringify(_custom_fields(data).get("cluster_port"))
+            cluster_port = _stringify(data["custom_fields"].get("cluster_port"))
             if cluster_port:
                 return f"{cluster_host}:{cluster_port}"
-        target = _record_address(record)
+        target = cluster_host
         if not target:
             return None
-        port = data.get("port") or _custom_fields(data).get("metrics_port")
+        port = data["custom_fields"].get("metrics_port")
         port_text = _stringify(port)
         if port_text:
             return f"{target}:{port_text}"
@@ -195,7 +127,7 @@ def _probe_target_with_path(record: MonitoredRecord, module: str) -> str | None:
     # ADR-0038 Amendment B: a URL path rides the target, so it only
     # applies to http-prober modules — never tcp/icmp/snmp.
     if target and module.startswith("http_"):
-        path = _normalize_probe_path(_custom_fields(record.data).get("probe_path"))
+        path = _normalize_probe_path(record.data["custom_fields"].get("probe_path"))
         if path:
             target = f"{target}{path}"
     return target
@@ -265,10 +197,12 @@ def _build_lane(
     skipped = Counter[str]()
     for record in records:
         data = record.data
-        if record.kind not in lane.kinds or lane.tag not in _tags(data):
+        if record.kind not in lane.kinds:
             continue
         try:
-            custom_fields = _custom_fields(data)
+            if lane.tag not in _tags(data):
+                continue
+            custom_fields = data["custom_fields"]
             value = _stringify(custom_fields.get(lane.field)) or lane.default
             if not value:
                 skipped[lane.missing] += 1
