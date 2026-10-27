@@ -5,25 +5,12 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-SERVICES = "services"
-DEVICES = "devices"
-VIRTUAL_MACHINES = "virtual_machines"
-RECORD_KINDS = (SERVICES, DEVICES, VIRTUAL_MACHINES)
+from .records import DEVICES, SERVICES, VIRTUAL_MACHINES, Record
 
 
-@dataclass(frozen=True)
-class MonitoredRecord:
-    kind: str
-    data: Mapping[str, Any]
-
-
-def _tags(data: Mapping[str, Any]) -> set[str]:
-    return {tag["name"] for tag in data["tags"]}
-
-
-def _first_tag_suffix(data: Mapping[str, Any], prefix: str) -> str | None:
+def _first_tag_suffix(tags: Iterable[str], prefix: str) -> str | None:
     suffixes = []
-    for tag in _tags(data):
+    for tag in tags:
         if tag.startswith(prefix + ":"):
             suffix = tag.split(":", 1)[1].strip()
             if suffix:
@@ -34,67 +21,43 @@ def _first_tag_suffix(data: Mapping[str, Any], prefix: str) -> str | None:
     return suffixes[0]
 
 
-def _stringify(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        cleaned = value.strip()
-        return cleaned or None
-    if isinstance(value, int):
-        return str(value)
-    return str(value).strip() or None
-
-
-def _cluster_service_host(data: Mapping[str, Any]) -> str | None:
-    custom_fields = data["custom_fields"]
-    service = _stringify(custom_fields.get("cluster_service"))
-    namespace = _stringify(custom_fields.get("cluster_namespace"))
+def _cluster_service_host(record: Record) -> str | None:
+    service = record.fields.get("cluster_service")
+    namespace = record.fields.get("cluster_namespace")
     if service and namespace:
         return f"{service}.{namespace}.svc.cluster.local"
     return None
 
 
-def _site_slug(data: Mapping[str, Any]) -> str | None:
-    site = data.get("site")
-    return site["slug"] if site else None
-
-
-def _common_labels(data: Mapping[str, Any]) -> dict[str, str]:
+def _common_labels(record: Record) -> dict[str, str]:
     labels: dict[str, str] = {}
     for prefix in ("app", "exposure"):
-        value = _first_tag_suffix(data, prefix)
+        value = _first_tag_suffix(record.tags, prefix)
         if value:
             labels[prefix] = value
-    site = _site_slug(data)
-    if site:
-        labels["site"] = site
+    if record.site:
+        labels["site"] = record.site
     return labels
 
 
-def _record_address(record: MonitoredRecord) -> str | None:
-    data = record.data
-    cluster_host = _cluster_service_host(data)
-    if cluster_host:
+def _record_address(record: Record) -> str | None:
+    cluster_host = _cluster_service_host(record)
+    if cluster_host or record.kind == SERVICES:
         return cluster_host
-    if record.kind == SERVICES:
-        return None
-    primary_ip4 = data["primary_ip4"]
-    return primary_ip4["address"].split("/", 1)[0] if primary_ip4 else None
+    return record.address
 
 
-def _probe_target(record: MonitoredRecord) -> str | None:
-    data = record.data
-    cluster_host = _cluster_service_host(data)
+def _probe_target(record: Record) -> str | None:
+    cluster_host = _cluster_service_host(record)
     if record.kind == SERVICES:
         if cluster_host:
-            cluster_port = _stringify(data["custom_fields"].get("cluster_port"))
+            cluster_port = record.fields.get("cluster_port")
             if cluster_port:
                 return f"{cluster_host}:{cluster_port}"
         target = cluster_host
         if not target:
             return None
-        port = data["custom_fields"].get("metrics_port")
-        port_text = _stringify(port)
+        port_text = record.fields.get("metrics_port")
         if port_text:
             return f"{target}:{port_text}"
         return target
@@ -104,8 +67,7 @@ def _probe_target(record: MonitoredRecord) -> str | None:
     return target
 
 
-def _normalize_probe_path(value: Any) -> str | None:
-    text = _stringify(value)
+def _normalize_probe_path(text: str | None) -> str | None:
     if not text:
         return None
     return "/" + text.lstrip("/")
@@ -115,33 +77,33 @@ def _group(target: str, labels: dict[str, str]) -> dict[str, Any]:
     return {"targets": [target], "labels": labels}
 
 
-def _scrape_target(record: MonitoredRecord, port: str) -> str | None:
+def _scrape_target(record: Record, port: str) -> str | None:
     target = _record_address(record)
     if not target:
         return None
     return f"{target}:{port}"
 
 
-def _probe_target_with_path(record: MonitoredRecord, module: str) -> str | None:
+def _probe_target_with_path(record: Record, module: str) -> str | None:
     target = _probe_target(record)
     # ADR-0038 Amendment B: a URL path rides the target, so it only
     # applies to http-prober modules — never tcp/icmp/snmp.
     if target and module.startswith("http_"):
-        path = _normalize_probe_path(record.data["custom_fields"].get("probe_path"))
+        path = _normalize_probe_path(record.fields.get("probe_path"))
         if path:
             target = f"{target}{path}"
     return target
 
 
-def _snmp_target(record: MonitoredRecord, module: str) -> str | None:
+def _snmp_target(record: Record, module: str) -> str | None:
     return _record_address(record)
 
 
-def _metrics_path_label(custom_fields: Mapping[str, Any], port: str) -> dict[str, str]:
-    return {"__metrics_path__": _stringify(custom_fields.get("metrics_path")) or "/metrics"}
+def _metrics_path_label(fields: Mapping[str, str | None], port: str) -> dict[str, str]:
+    return {"__metrics_path__": fields.get("metrics_path") or "/metrics"}
 
 
-def _module_label(custom_fields: Mapping[str, Any], module: str) -> dict[str, str]:
+def _module_label(fields: Mapping[str, str | None], module: str) -> dict[str, str]:
     return {"__param_module": module}
 
 
@@ -153,8 +115,8 @@ class Lane:
     # The custom field this lane reads, and the skip reason when it is unset with no default.
     field: str
     missing: str
-    target: Callable[[MonitoredRecord, str], str | None]
-    labels: Callable[[Mapping[str, Any], str], dict[str, str]]
+    target: Callable[[Record, str], str | None]
+    labels: Callable[[Mapping[str, str | None], str], dict[str, str]]
     default: str | None = None
 
 
@@ -191,42 +153,33 @@ LANES = (
 
 
 def _build_lane(
-    records: Iterable[MonitoredRecord], lane: Lane
+    records: Iterable[Record], lane: Lane
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     groups: list[dict[str, Any]] = []
     skipped = Counter[str]()
     for record in records:
-        data = record.data
-        if record.kind not in lane.kinds:
+        if record.kind not in lane.kinds or lane.tag not in record.tags:
             continue
-        try:
-            if lane.tag not in _tags(data):
-                continue
-            custom_fields = data["custom_fields"]
-            value = _stringify(custom_fields.get(lane.field)) or lane.default
-            if not value:
-                skipped[lane.missing] += 1
-                continue
-            target = lane.target(record, value)
-            if not target:
-                skipped["missing_target"] += 1
-                continue
-            labels = _common_labels(data)
-            labels.update(lane.labels(custom_fields, value))
-            groups.append(_group(target, labels))
-        except Exception:  # noqa: BLE001, a bad record is skipped and the lane still served
-            skipped["invalid_object"] += 1
+        value = record.fields.get(lane.field) or lane.default
+        if not value:
+            skipped[lane.missing] += 1
+            continue
+        target = lane.target(record, value)
+        if not target:
+            skipped["missing_target"] += 1
+            continue
+        labels = _common_labels(record)
+        labels.update(lane.labels(record.fields, value))
+        groups.append(_group(target, labels))
     return groups, dict(skipped)
 
 
 def build_payloads(
-    records: Mapping[str, Iterable[Mapping[str, Any]]],
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, int]], dict[str, int]]:
-    by_kind = {kind: list(records[kind]) for kind in RECORD_KINDS}
-    monitored = [MonitoredRecord(kind, item) for kind, items in by_kind.items() for item in items]
+    records: Iterable[Record],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, int]]]:
+    records = list(records)
     payloads: dict[str, list[dict[str, Any]]] = {}
     skipped: dict[str, dict[str, int]] = {}
     for lane in LANES:
-        payloads[lane.name], skipped[lane.name] = _build_lane(monitored, lane)
-    source_counts = {kind: len(items) for kind, items in by_kind.items()}
-    return payloads, skipped, source_counts
+        payloads[lane.name], skipped[lane.name] = _build_lane(records, lane)
+    return payloads, skipped

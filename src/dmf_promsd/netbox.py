@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import httpx
+
+from .records import DEVICES, SERVICES, VIRTUAL_MACHINES, Record
 
 
 def _tag_slug(name: str) -> str:
@@ -12,10 +14,34 @@ def _tag_slug(name: str) -> str:
 
 
 _LIST_PATHS = {
-    "services": "/api/ipam/services/",
-    "devices": "/api/dcim/devices/",
-    "virtual_machines": "/api/virtualization/virtual-machines/",
+    SERVICES: "/api/ipam/services/",
+    DEVICES: "/api/dcim/devices/",
+    VIRTUAL_MACHINES: "/api/virtualization/virtual-machines/",
 }
+
+
+def _text(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value).strip() or None
+
+
+def _string(value: Any) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"expected text, got {type(value).__name__}")
+    return value
+
+
+def parse_record(kind: str, raw: Mapping[str, Any]) -> Record:
+    primary_ip4 = raw.get("primary_ip4")
+    site = raw.get("site")
+    return Record(
+        kind=kind,
+        tags=frozenset(_string(tag["name"]) for tag in raw["tags"]),
+        address=_string(primary_ip4["address"]).split("/", 1)[0] if primary_ip4 else None,
+        site=_string(site["slug"]) if site else None,
+        fields={name: _text(value) for name, value in raw["custom_fields"].items()},
+    )
 
 
 class NetboxAPIError(RuntimeError):
@@ -81,3 +107,13 @@ class NetboxClient:
             for obj in self._list_paginated(path, [("limit", "1000"), ("tag", _tag_slug(tag))]):
                 merged[obj.get("id", id(obj))] = obj
         return list(merged.values())
+
+    def list_records(self, kind: str, tags: Iterable[str]) -> tuple[list[Record], int]:
+        records: list[Record] = []
+        unreadable = 0
+        for raw in self.list_tagged(kind, tags):
+            try:
+                records.append(parse_record(kind, raw))
+            except (KeyError, TypeError, AttributeError):
+                unreadable += 1
+        return records, unreadable

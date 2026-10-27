@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .netbox import NetboxClient
-from .sd import LANES, RECORD_KINDS, build_payloads
+from .records import RECORD_KINDS, Record
+from .sd import LANES, build_payloads
 
 
 @dataclass(frozen=True)
@@ -67,13 +68,14 @@ class PromSDCache:
 
     def refresh(self) -> bool:
         try:
-            records = {
-                kind: self._client.list_tagged(
-                    kind, [lane.tag for lane in LANES if kind in lane.kinds]
-                )
-                for kind in RECORD_KINDS
-            }
-            payloads, skipped, source_counts = build_payloads(records)
+            records: list[Record] = []
+            source_counts: dict[str, int] = {}
+            for kind in RECORD_KINDS:
+                tags = [lane.tag for lane in LANES if kind in lane.kinds]
+                kind_records, unreadable = self._client.list_records(kind, tags)
+                records.extend(kind_records)
+                source_counts[kind] = len(kind_records) + unreadable
+            payloads, skipped = build_payloads(records)
         except Exception as exc:  # noqa: BLE001, a failed refresh keeps the last snapshot
             with self._lock:
                 self._last_error = str(exc)
