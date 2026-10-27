@@ -17,10 +17,11 @@ MAY_IMPORT: dict[str, set[str]] = {
     "__init__": set(),
     "settings": set(),
     "records": set(),
+    "observer": {"settings"},
     "sd": {"records"},
     "netbox": {"records"},
     "cache": {"netbox", "records", "sd"},
-    "main": {"__init__", "cache", "netbox", "sd", "settings"},
+    "main": {"__init__", "cache", "netbox", "observer", "sd", "settings"},
 }
 
 
