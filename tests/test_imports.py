@@ -16,7 +16,8 @@ assert MODULES, f"no modules found in {SOURCE}"
 MAY_IMPORT: dict[str, set[str]] = {
     "__init__": set(),
     "settings": set(),
-    "observer": {"settings"},
+    "observer": {"observer_metadata", "settings"},
+    "observer_metadata": set(),
     "sd": set(),
     "netbox": set(),
     "cache": {"netbox", "sd"},
