@@ -24,6 +24,16 @@ The service skips a record in a lane when it lacks a required field: `metrics_po
 
 `GET /healthz` returns the status, product name and version, the cache settings (`cache_ttl_seconds`, `http_sd_refresh` and `freshness_window_seconds`), `snapshot_age_seconds`, `source_counts` (the number of services, devices and virtual machines fetched from NetBox) and `last_error`.
 
+`GET /metrics` exposes Prometheus client and OpenBao AppRole rotation metadata
+metrics. The observer reads only three configured KV v2 metadata records and
+uses the pod's projected Kubernetes service-account token to authenticate to
+OpenBao. It never lists OpenBao paths, reads application secrets, or returns
+raw metadata, credentials, or request errors. If the observer is not configured
+or a record is missing, malformed, or unreadable, it reports target availability
+as zero and removes expiry and run-state series derived from stale data. The
+existing NetBox health and service-discovery behavior does not depend on the
+observer configuration.
+
 ## Run it
 
 You need Python 3.12 or later, and a NetBox instance with an API token that can read services, devices and virtual machines.
@@ -57,6 +67,16 @@ The service reads these environment variables:
 - `NETBOX_VALIDATE_CERTS` turns TLS certificate checks on or off. The default is `true`.
 - `CACHE_TTL_SECONDS` sets how often the cache refreshes from NetBox. The default is `45`.
 - `HTTP_SD_REFRESH` is a refresh hint only. The default is `30s`.
+- `OPENBAO_ADDR` is the HTTPS address of OpenBao. It is unset until the
+  observer identity is deployed.
+- `OPENBAO_K8S_AUTH_MOUNT` is the OpenBao Kubernetes auth mount. The default is
+  `kubernetes`.
+- `OPENBAO_K8S_ROLE` is the observer auth role. The default is
+  `dmf-promsd-observer`.
+- `OPENBAO_SA_JWT_FILE` is the projected service-account token file. The
+  default is the Kubernetes pod token path.
+- `OPENBAO_OBSERVER_INTERVAL_SECONDS` controls metadata polling. The default
+  is `60`; supported values are 10 through 3600 seconds.
 
 ## Endpoints
 
@@ -65,10 +85,16 @@ The service reads these environment variables:
 - `GET /sd/snmp`
 - `GET /healthz`
 - `GET /readyz`
+- `GET /metrics`
 
 The adapter serves Prometheus target groups from an in-memory cache refreshed on
 its own timer. NetBox is queried at a fixed low rate regardless of how many
 Prometheus replicas poll the service.
+
+The observer target list is currently a fixed three-target configuration and
+must stay aligned with the infrastructure rotation registry. Prometheus scrape
+configuration and alert rules are separate infrastructure work; this endpoint
+does not claim that the metrics are already scraped or alerted on.
 
 ## License
 

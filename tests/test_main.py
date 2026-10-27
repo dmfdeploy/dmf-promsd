@@ -7,6 +7,7 @@ from collections.abc import Callable
 from fastapi.testclient import TestClient
 
 from dmf_promsd import __version__
+from dmf_promsd.cache import PromSDCache
 from dmf_promsd.main import create_app
 from dmf_promsd.settings import Settings
 from tests.netbox45 import BASE_URL, TOKEN, FakeNetbox, device, service, virtual_machine
@@ -21,6 +22,26 @@ def test_create_app_requires_netbox_settings_when_no_cache_is_injected():
         assert "NETBOX_URL and NETBOX_TOKEN" in str(exc)
     else:
         raise AssertionError("expected RuntimeError")
+
+
+def test_metrics_endpoint_uses_the_injected_observer_registry():
+    class FakeObserver:
+        def render(self):
+            return b"# TYPE observer_test gauge\nobserver_test 1\n", "text/plain"
+
+    app = create_app(
+        settings=Settings(),
+        cache=PromSDCache(client=None, ttl_seconds=1),
+        observer=FakeObserver(),
+    )
+    with TestClient(app) as http:
+        response = http.get("/metrics")
+        health = http.get("/healthz")
+
+    assert response.status_code == 200
+    assert "observer_test 1" in response.text
+    assert health.status_code == 200
+    assert health.json()["product"] == "DMF PromSD"
 
 
 def _cache_threads() -> list[threading.Thread]:
