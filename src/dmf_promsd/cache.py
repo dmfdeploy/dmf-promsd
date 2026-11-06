@@ -17,8 +17,8 @@ class CacheSnapshot:
     lanes: dict[str, list[dict[str, Any]]]
     skipped: dict[str, dict[str, int]]
     source_counts: dict[str, int]
-    # Lane tags NetBox has no tag for, or refused to filter by. Their lanes serve fewer records.
-    unavailable_tags: list[str]
+    # Lane tags NetBox doesn't have. No record can carry one, so its lane is empty.
+    missing_tags: list[str]
 
 
 @dataclass(frozen=True)
@@ -73,15 +73,14 @@ class PromSDCache:
             records: list[Record] = []
             source_counts: dict[str, int] = {}
             slugs = self._client.tag_slugs(lane.tag for lane in LANES)
-            unavailable = {lane.tag for lane in LANES} - slugs.keys()
+            missing = {lane.tag for lane in LANES} - slugs.keys()
             for kind in RECORD_KINDS:
                 kind_slugs = [
                     slugs[lane.tag] for lane in LANES if kind in lane.kinds and lane.tag in slugs
                 ]
-                listing = self._client.list_records(kind, kind_slugs)
-                records.extend(listing.records)
-                source_counts[kind] = len(listing.records) + listing.unreadable
-                unavailable |= {tag for tag, slug in slugs.items() if slug in listing.rejected}
+                kind_records, unreadable = self._client.list_records(kind, kind_slugs)
+                records.extend(kind_records)
+                source_counts[kind] = len(kind_records) + unreadable
             payloads, skipped = build_payloads(records)
         except Exception as exc:  # noqa: BLE001, a failed refresh keeps the last snapshot
             with self._lock:
@@ -93,7 +92,7 @@ class PromSDCache:
             lanes=payloads,
             skipped=skipped,
             source_counts=source_counts,
-            unavailable_tags=sorted(unavailable),
+            missing_tags=sorted(missing),
         )
         with self._lock:
             self._snapshot = snapshot
