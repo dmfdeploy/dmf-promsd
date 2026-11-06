@@ -56,6 +56,7 @@ def test_lifespan_refreshes_on_startup_and_stops_on_shutdown():
         "http_sd_refresh": "11s",
         "freshness_window_seconds": 14,
         "source_counts": {"services": 0, "devices": 1, "virtual_machines": 0},
+        "unavailable_tags": [],
         "last_error": None,
     }
     assert ready.status_code == 200
@@ -232,3 +233,73 @@ def test_a_record_promsd_cannot_read_costs_the_others_nothing():
     assert [group["targets"] for group in scrape] == [["192.0.2.11:9100"]]
     assert health["source_counts"]["devices"] == 2
     assert health["last_error"] is None
+
+
+def _serve(netbox: FakeNetbox) -> tuple[dict[str, list[str]], dict]:
+    client = netbox.client()
+    app = create_app(Settings(netbox_url=BASE_URL, netbox_token=TOKEN), client=client)
+    try:
+        with TestClient(app) as http:
+            served = {
+                lane: [t for group in http.get(f"/sd/{lane}").json() for t in group["targets"]]
+                for lane in ("scrape", "probe", "snmp")
+            }
+            health = http.get("/healthz").json()
+            ready = http.get("/readyz")
+    finally:
+        client.close()
+    assert ready.status_code == 200
+    return served, health
+
+
+def _one_device_per_lane() -> list[dict]:
+    return [
+        device("node-1", ["monitoring:scrape"], address="192.0.2.11/24", metrics_port=9100),
+        device("encoder-1", ["monitoring:probe"], address="192.0.2.21/24", probe_module="icmp"),
+        device("switch-1", ["monitoring:snmp"], address="192.0.2.31/24"),
+    ]
+
+
+# promsd must use the slug NetBox chose, not one it computes from the tag name.
+def test_lanes_follow_the_slugs_netbox_chose():
+    ui_slugs = {f"monitoring:{lane}": f"monitoring{lane}" for lane in ("scrape", "probe", "snmp")}
+    served, health = _serve(FakeNetbox(devices=_one_device_per_lane(), tag_slugs=ui_slugs))
+
+    assert served == {
+        "scrape": ["192.0.2.11:9100"],
+        "probe": ["192.0.2.21"],
+        "snmp": ["192.0.2.31"],
+    }
+    assert health["last_error"] is None
+    assert health["unavailable_tags"] == []
+
+
+def test_legacy_hyphen_slugs_still_work():
+    served, _ = _serve(FakeNetbox(devices=_one_device_per_lane()))
+
+    assert served == {
+        "scrape": ["192.0.2.11:9100"],
+        "probe": ["192.0.2.21"],
+        "snmp": ["192.0.2.31"],
+    }
+
+
+# A lane tag NetBox lacks empties its lane only, and /healthz names the tag.
+def test_a_missing_lane_tag_empties_only_its_lane():
+    netbox = FakeNetbox(devices=_one_device_per_lane(), absent_tags=["monitoring:probe"])
+    served, health = _serve(netbox)
+
+    assert served == {"scrape": ["192.0.2.11:9100"], "probe": [], "snmp": ["192.0.2.31"]}
+    assert health["last_error"] is None
+    assert health["unavailable_tags"] == ["monitoring:probe"]
+
+
+# NetBox's 400 for one lane's query costs the other lanes nothing.
+def test_a_refused_lane_query_empties_only_its_lane():
+    netbox = FakeNetbox(devices=_one_device_per_lane())
+    netbox.refused_slugs.add("monitoring-snmp")
+    served, health = _serve(netbox)
+
+    assert served == {"scrape": ["192.0.2.11:9100"], "probe": ["192.0.2.21"], "snmp": []}
+    assert health["last_error"] is None
+    assert health["unavailable_tags"] == ["monitoring:snmp"]

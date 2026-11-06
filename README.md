@@ -10,6 +10,8 @@ Part of [dmfdeploy](https://github.com/dmfdeploy/dmfdeploy), an independent open
 
 The dmfdeploy platform keeps NetBox as its source of truth for inventory. `dmf-promsd` reads NetBox services, devices and virtual machines, and serves the ones that carry a monitoring tag as Prometheus [HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/) target groups. Prometheus then scrapes or probes new workloads without anyone editing its configuration.
 
+The service looks each lane tag up in NetBox by name and filters by the slug NetBox returns, so a tag created in the NetBox UI works with whatever slug NetBox chose. If a lane tag doesn't exist in NetBox, or NetBox refuses to filter by it, that lane serves no targets from it, the other lanes keep working, and `unavailable_tags` in `/healthz` lists the tag.
+
 A record joins a lane when it has the matching tag in NetBox and the lane reads that record type:
 
 | Tag | Endpoint | Reads | Lane |
@@ -22,7 +24,7 @@ A record with the `cluster_service` and `cluster_namespace` custom fields uses t
 
 The service skips a record in a lane when it lacks a required field: `metrics_port` for scrape, `probe_module` for probe, or an address for any lane. It keeps the skip counts in memory and does not return them from `/healthz`.
 
-`GET /healthz` returns the status, product name and version, the cache settings (`cache_ttl_seconds`, `http_sd_refresh` and `freshness_window_seconds`), `snapshot_age_seconds`, `source_counts` (the number of services, devices and virtual machines fetched from NetBox) and `last_error`.
+`GET /healthz` returns the status, product name and version, the cache settings (`cache_ttl_seconds`, `http_sd_refresh` and `freshness_window_seconds`), `snapshot_age_seconds`, `source_counts` (the number of services, devices and virtual machines fetched from NetBox), `unavailable_tags` and `last_error`.
 
 ## Run it
 
