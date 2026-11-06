@@ -57,7 +57,6 @@ def test_lifespan_refreshes_on_startup_and_stops_on_shutdown():
         "http_sd_refresh": "11s",
         "freshness_window_seconds": 14,
         "source_counts": {"services": 0, "devices": 1, "virtual_machines": 0},
-        "missing_tags": [],
         "last_error": None,
     }
     assert ready.status_code == 200
@@ -275,40 +274,12 @@ def test_lanes_follow_the_slugs_netbox_chose():
 
     assert served == ALL_LANES
     assert health["last_error"] is None
-    assert health["missing_tags"] == []
 
 
 def test_legacy_hyphen_slugs_still_work():
     served, _ = _serve(FakeNetbox(devices=_one_device_per_lane()))
 
     assert served == ALL_LANES
-
-
-# A lane tag NetBox lacks empties its lane only, and /healthz names the tag.
-def test_a_missing_lane_tag_empties_only_its_lane():
-    netbox = FakeNetbox(devices=_one_device_per_lane(), absent_tags=["monitoring:probe"])
-    served, health = _serve(netbox)
-
-    assert served == {**ALL_LANES, "probe": []}
-    assert health["last_error"] is None
-    assert health["missing_tags"] == ["monitoring:probe"]
-    # No record query names a tag NetBox doesn't have.
-    queried = {r.url.params["tag"] for r in netbox.requests if "tag" in r.url.params}
-    assert queried == {"monitoring-scrape", "monitoring-snmp"}
-
-
-# A device that carries two lane tags still serves only the lane whose tag exists.
-def test_a_device_with_two_lane_tags_serves_only_the_existing_lane():
-    both = device(
-        "node-1",
-        ["monitoring:scrape", "monitoring:snmp"],
-        address="192.0.2.11/24",
-        metrics_port=9100,
-    )
-    served, health = _serve(FakeNetbox(devices=[both], absent_tags=["monitoring:snmp"]))
-
-    assert served == {"scrape": ["192.0.2.11:9100"], "probe": [], "snmp": []}
-    assert health["missing_tags"] == ["monitoring:snmp"]
 
 
 def _refused_from_page(offset: int):
@@ -321,7 +292,7 @@ def _refused_from_page(offset: int):
     return refuse
 
 
-# A 400 on a record query is not a missing tag. The refresh fails and the last snapshot stays.
+# A 400 on a record query fails the refresh and the last snapshot stays.
 def test_a_refused_record_query_keeps_the_last_snapshot():
     for first_bad_offset in (0, 1):
         netbox = FakeNetbox(devices=[*_one_device_per_lane(), _extra_scrape_device()])
@@ -347,50 +318,20 @@ def _extra_scrape_device() -> dict:
     return device("node-2", ["monitoring:scrape"], address="192.0.2.12/24", metrics_port=9100)
 
 
-# A tag deleted after a good snapshot empties its lane on the next refresh.
-def test_a_tag_removed_after_a_good_snapshot_empties_its_lane():
-    netbox = FakeNetbox(devices=_one_device_per_lane())
+# With a lane tag unseen on the first refresh there is no snapshot to serve, so the
+# service is not ready and says which tags it didn't see.
+def test_a_missing_lane_tag_on_the_first_refresh_leaves_the_service_not_ready():
+    netbox = FakeNetbox(devices=_one_device_per_lane(), absent_tags=["monitoring:probe"])
     client = netbox.client()
-    cache = PromSDCache(client=client, ttl_seconds=60)
+    app = create_app(Settings(netbox_url=BASE_URL, netbox_token=TOKEN), client=client)
     try:
-        assert cache.refresh()
-        assert [g["targets"] for g in cache.lane_payload("snmp")] == [["192.0.2.31"]]
-
-        netbox.remove_tag("monitoring:snmp")
-        assert cache.refresh()
-
-        assert cache.lane_payload("snmp") == []
-        assert [g["targets"] for g in cache.lane_payload("scrape")] == [["192.0.2.11:9100"]]
-        snapshot = cache.get_snapshot()
-        assert snapshot is not None and snapshot.missing_tags == ["monitoring:snmp"]
+        with TestClient(app) as http:
+            ready = http.get("/readyz")
+            health = http.get("/healthz").json()
     finally:
         client.close()
 
-
-# The tag can appear between the lookup that misses it and the record queries. The lane
-# stays empty for that refresh, and the next refresh serves every record.
-def test_a_tag_created_mid_refresh_does_not_fill_its_lane_partially():
-    tags = ["monitoring:scrape", "monitoring:snmp"]
-    both = device("node-1", tags, address="192.0.2.11/24", metrics_port=9100)
-    scrape_only = device(
-        "switch-1", ["monitoring:scrape"], address="192.0.2.31/24", metrics_port=9100
-    )
-    netbox = FakeNetbox(devices=[both, scrape_only], absent_tags=["monitoring:snmp"])
-    netbox.after_tag_lookup = lambda: netbox.attach_tag("monitoring:snmp", [both, scrape_only])
-    client = netbox.client()
-    cache = PromSDCache(client=client, ttl_seconds=60)
-    try:
-        assert cache.refresh()
-        snapshot = cache.get_snapshot()
-        assert snapshot is not None
-        assert snapshot.lanes["snmp"] == []
-        assert snapshot.skipped["snmp"] == {}
-        assert snapshot.missing_tags == ["monitoring:snmp"]
-        assert len(snapshot.lanes["scrape"]) == 2
-
-        assert cache.refresh()
-        targets = [g["targets"] for g in cache.lane_payload("snmp")]
-        assert sorted(targets) == [["192.0.2.11"], ["192.0.2.31"]]
-        assert cache.get_snapshot().missing_tags == []
-    finally:
-        client.close()
+    assert ready.status_code == 503
+    assert ready.json()["reason"] == "no snapshot"
+    assert "monitoring:probe" in health["last_error"]
+    assert "missing_tags" not in health

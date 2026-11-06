@@ -17,8 +17,6 @@ class CacheSnapshot:
     lanes: dict[str, list[dict[str, Any]]]
     skipped: dict[str, dict[str, int]]
     source_counts: dict[str, int]
-    # Lane tags NetBox doesn't have. No record can carry one, so its lane is empty.
-    missing_tags: list[str]
 
 
 @dataclass(frozen=True)
@@ -73,23 +71,21 @@ class PromSDCache:
             records: list[Record] = []
             source_counts: dict[str, int] = {}
             slugs = self._client.tag_slugs(lane.tag for lane in LANES)
-            missing = {lane.tag for lane in LANES} - slugs.keys()
-            if not slugs:
-                # NetBox hides objects the token may not view, so a token without tag
-                # access sees no tags at all. Publishing empty lanes would pass for
-                # "no lane tags exist", so fail the refresh and keep the last snapshot.
+            unseen = sorted({lane.tag for lane in LANES} - slugs.keys())
+            if unseen:
+                # NetBox hides objects the token may not view, so a hidden lane tag looks
+                # the same as a missing one. Publishing an empty lane would pass for "no
+                # records", so fail the refresh and keep the last snapshot.
                 raise RuntimeError(
-                    "No lane tag is visible in NetBox. The token may lack permission "
-                    "to view tags (extras.view_tag)."
+                    f"Lane tags not seen in NetBox: {', '.join(unseen)}. Each is either "
+                    "missing from NetBox or not visible to the token (extras.view_tag)."
                 )
             for kind in RECORD_KINDS:
-                kind_slugs = [
-                    slugs[lane.tag] for lane in LANES if kind in lane.kinds and lane.tag in slugs
-                ]
+                kind_slugs = [slugs[lane.tag] for lane in LANES if kind in lane.kinds]
                 kind_records, unreadable = self._client.list_records(kind, kind_slugs)
                 records.extend(kind_records)
                 source_counts[kind] = len(kind_records) + unreadable
-            payloads, skipped = build_payloads(records, missing)
+            payloads, skipped = build_payloads(records)
         except Exception as exc:  # noqa: BLE001, a failed refresh keeps the last snapshot
             with self._lock:
                 self._last_error = str(exc)
@@ -100,7 +96,6 @@ class PromSDCache:
             lanes=payloads,
             skipped=skipped,
             source_counts=source_counts,
-            missing_tags=sorted(missing),
         )
         with self._lock:
             self._snapshot = snapshot

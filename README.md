@@ -10,7 +10,7 @@ Part of [dmfdeploy](https://github.com/dmfdeploy/dmfdeploy), an independent open
 
 The dmfdeploy platform keeps NetBox as its source of truth for inventory. `dmf-promsd` reads NetBox services, devices and virtual machines, and serves the ones that carry a monitoring tag as Prometheus [HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/) target groups. Prometheus then scrapes or probes new workloads without anyone editing its configuration.
 
-The service looks each lane tag up in NetBox by name and filters by the slug NetBox returns, so a tag created in the NetBox UI works with whatever slug NetBox chose. If a lane tag doesn't exist in NetBox, that lane is empty, the other lanes keep working, and `missing_tags` in `/healthz` lists the tag. Any error on a record query fails the refresh, and the service keeps serving the last good snapshot.
+The service looks each lane tag up in NetBox by name and filters by the slug NetBox returns, so a tag created in the NetBox UI works with whatever slug NetBox chose. Every lane tag must exist in NetBox and be visible to the token. If any lane tag is missing or hidden, the refresh fails, the service keeps serving the last good lanes, and `last_error` in `/healthz` names the tags it didn't see. Any error on a record query fails the refresh the same way. The service reports not ready once the kept lanes go stale.
 
 A record joins a lane when it has the matching tag in NetBox and the lane reads that record type:
 
@@ -24,11 +24,11 @@ A record with the `cluster_service` and `cluster_namespace` custom fields uses t
 
 The service skips a record in a lane when it lacks a required field: `metrics_port` for scrape, `probe_module` for probe, or an address for any lane. It keeps the skip counts in memory and does not return them from `/healthz`.
 
-`GET /healthz` returns the status, product name and version, the cache settings (`cache_ttl_seconds`, `http_sd_refresh` and `freshness_window_seconds`), `snapshot_age_seconds`, `source_counts` (the number of services, devices and virtual machines fetched from NetBox), `missing_tags` (the lane tags NetBox doesn't have) and `last_error`.
+`GET /healthz` returns the status, product name and version, the cache settings (`cache_ttl_seconds`, `http_sd_refresh` and `freshness_window_seconds`), `snapshot_age_seconds`, `source_counts` (the number of services, devices and virtual machines fetched from NetBox) and `last_error`.
 
 ## Run it
 
-You need Python 3.12 or later, and a NetBox instance with an API token with view access to services, devices, virtual machines and tags (`extras | tag | view`). NetBox hides objects a token can't view, so without tag access promsd sees no lane tags. In that case the refresh fails, the service keeps the last good lanes, and `last_error` reports that no lane tag is visible and the token may lack `extras.view_tag`. The service reports not ready until a refresh succeeds or when the last good lanes go stale.
+You need Python 3.12 or later, and a NetBox instance with an API token with view access to services, devices, virtual machines and all three lane tags (`extras | tag | view`). NetBox hides objects a token can't view, so promsd can't tell a hidden lane tag from a missing one. In either case the refresh fails, the service keeps the last good lanes, and `last_error` names the tags it didn't see and mentions `extras.view_tag`. The service reports not ready until a refresh succeeds, or once the last good lanes go stale.
 
 Supply the NetBox address and token through environment variables. The service refuses to start without `NETBOX_URL` and `NETBOX_TOKEN`. Set the token from your secret store at run time and keep it out of files in this repository.
 
