@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -132,7 +133,7 @@ def create_app(
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics() -> Response:
-        body, content_type = app.state.observer.render()
+        body, content_type = await run_in_threadpool(app.state.observer.render)
         return Response(content=body, media_type=content_type)
 
     for lane in LANES:

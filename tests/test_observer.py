@@ -175,7 +175,8 @@ def test_poll_reads_only_fixed_paths_and_redacts_credentials_and_attribution(tmp
     assert all(path.startswith("/v1/secret/data/platform/approle-rotation/") for path, _ in seen)
     assert all(token == "TOKEN_SENTINEL" for _, token in seen)
     assert 'dmf_openbao_approle_secret_id_expires_at_seconds{role="external-secrets"' in exposition
-    assert "dmf_openbao_approle_rotation_last_failure{" in exposition
+    assert "dmf_openbao_approle_rotation_last_failure{" not in exposition
+    assert "dmf_openbao_approle_rotation_last_failure_timestamp_seconds{" in exposition
     assert (
         'dmf_openbao_approle_rotation_last_scheduled_success_seconds{role="external-secrets"'
         in exposition
@@ -289,3 +290,99 @@ def test_background_poller_stops_cleanly_on_shutdown(tmp_path):
     assert thread is not None
     assert not thread.is_alive()
     assert observer._token == ""
+
+
+def _ok_handler(request: httpx.Request) -> httpx.Response:
+    if request.method == "POST":
+        return httpx.Response(200, json={"auth": {"client_token": "TOKEN_SENTINEL"}})
+    return httpx.Response(200, json=kv_response(request.url.path.rsplit("/", 1)[-1]))
+
+
+def test_unexpected_exception_in_poll_is_a_failure_signal_and_is_logged_safely(tmp_path, caplog):
+    boom = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if boom and request.method == "GET":
+            raise RuntimeError("ACCESSOR_SENTINEL")
+        return _ok_handler(request)
+
+    observer, client = make_observer(tmp_path, handler)
+    try:
+        observer.poll_once()
+        failed = observer.render()[0].decode()
+        boom = False
+        observer.poll_once()
+        recovered = observer.render()[0].decode()
+    finally:
+        observer.stop()
+        client.close()
+
+    assert f'dmf_openbao_approle_rotation_collection_error{{target="{TARGET}"}} 1.0' in failed
+    assert "dmf_openbao_approle_secret_id_expires_at_seconds{" not in failed
+    assert "RuntimeError" in caplog.text
+    assert "ACCESSOR_SENTINEL" not in caplog.text
+    assert f'dmf_openbao_approle_rotation_collection_error{{target="{TARGET}"}} 0.0' in recovered
+
+
+def test_poll_thread_survives_an_unexpected_exception_and_recovers(tmp_path):
+    observer, client = make_observer(tmp_path, _ok_handler)
+    real_poll = observer.poll_once
+    calls = []
+
+    def flaky_poll() -> None:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("ACCESSOR_SENTINEL")
+        real_poll()
+
+    observer.poll_once = flaky_poll
+    observer._stop.wait = lambda timeout=None: time.sleep(0.01)
+    observer.start()
+    deadline = time.monotonic() + 2
+    while observer._last_poll_at == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    thread = observer._thread
+    alive = thread is not None and thread.is_alive()
+    exposition = observer.render()[0].decode()
+    observer.stop()
+    client.close()
+
+    assert len(calls) >= 2
+    assert alive
+    assert f'dmf_openbao_approle_rotation_metadata_available{{target="{TARGET}"}} 1.0' in exposition
+
+
+def test_last_failure_clears_after_a_later_success_and_keeps_failure_time(tmp_path):
+    failed = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return _ok_handler(request)
+        target = request.url.path.rsplit("/", 1)[-1]
+        value = record(target)
+        if failed:
+            value.update(
+                latest_run_outcome="failure",
+                latest_run_at=1_700_000_050,
+                last_failure_at=1_700_000_050,
+            )
+        return httpx.Response(200, json={"data": {"data": value}})
+
+    observer, client = make_observer(tmp_path, handler)
+    try:
+        observer.poll_once()
+        during = observer.render()[0].decode()
+        failed = False
+        observer.poll_once()
+        after = observer.render()[0].decode()
+    finally:
+        observer.stop()
+        client.close()
+
+    flag = (
+        "dmf_openbao_approle_rotation_last_failure"
+        f'{{reason="delivery_failed",role="{TARGET}",target="{TARGET}"}}'
+    )
+    assert f"{flag} 1.0" in during
+    assert "dmf_openbao_approle_rotation_last_failure{" not in after
+    assert "dmf_openbao_approle_rotation_last_failure_timestamp_seconds{" in after

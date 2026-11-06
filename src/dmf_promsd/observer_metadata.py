@@ -45,6 +45,24 @@ class RotationRecord:
     latest_run_outcome: str
     latest_run_at: int
 
+    @property
+    def scheduled_failure_active(self) -> bool:
+        """Whether a failure is newer than the last scheduled success.
+
+        The registry keeps one shared failure time, so a manual failure also
+        counts here; a later manual run never clears it. An explicit latest
+        scheduled failure always counts, even when its time ties the last
+        scheduled success.
+        """
+        if self.latest_run_kind == "scheduled" and self.latest_run_outcome == "failure":
+            return True
+        if self.last_failure_at is None:
+            return False
+        return (
+            self.last_scheduled_success_at is None
+            or self.last_failure_at > self.last_scheduled_success_at
+        )
+
 
 _REQUIRED = {
     "schema_version",
@@ -149,6 +167,29 @@ def _latest_run(value: dict[str, Any], failure_at: int | None) -> tuple[str, str
     return value["latest_run_kind"], value["latest_run_outcome"], latest_run_at
 
 
+def _validate_chronology(
+    latest_run: tuple[str, str, int],
+    last_success: int | None,
+    last_scheduled_success: int | None,
+    failure_at: int | None,
+) -> None:
+    kind, outcome, latest_run_at = latest_run
+    recorded = (last_success, last_scheduled_success, failure_at)
+    if any(moment is not None and moment > latest_run_at for moment in recorded):
+        raise MetadataError("history is newer than the latest run")
+    if (
+        last_success is not None
+        and last_scheduled_success is not None
+        and last_scheduled_success > last_success
+    ):
+        raise MetadataError("scheduled success is newer than the last success")
+    if outcome == "success":
+        if last_success != latest_run_at:
+            raise MetadataError("latest success is missing from the success history")
+        if kind == "scheduled" and last_scheduled_success != latest_run_at:
+            raise MetadataError("latest scheduled success is missing from the history")
+
+
 def parse_record(payload: Any, expected_target: str) -> RotationRecord:
     """Validate a KV-v2 response and return only fields needed for safe metrics."""
     value = _record_value(payload, expected_target)
@@ -162,6 +203,9 @@ def parse_record(payload: Any, expected_target: str) -> RotationRecord:
     )
     failure_at, failure_reason = _failure_values(value)
     run_kind, run_outcome, latest_run_at = _latest_run(value, failure_at)
+    _validate_chronology(
+        (run_kind, run_outcome, latest_run_at), last_success, last_scheduled_success, failure_at
+    )
 
     return RotationRecord(
         role=value["approle_name"],
