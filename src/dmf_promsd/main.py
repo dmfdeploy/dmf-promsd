@@ -25,7 +25,6 @@ def _health_payload(cache: PromSDCache, refresh_hint: str) -> dict[str, Any]:
         "freshness_window_seconds": cache.freshness_window_seconds,
         "snapshot_age_seconds": state.age_seconds,
         "source_counts": state.snapshot.source_counts if state.snapshot else {},
-        "missing_tags": state.snapshot.missing_tags if state.snapshot else [],
         "last_error": state.last_error,
     }
 

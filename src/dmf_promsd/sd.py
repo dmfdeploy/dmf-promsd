@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -175,16 +175,11 @@ def _build_lane(
 
 
 def build_payloads(
-    records: Iterable[Record], missing_tags: Collection[str] = ()
+    records: Iterable[Record],
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, int]]]:
     records = list(records)
     payloads: dict[str, list[dict[str, Any]]] = {}
     skipped: dict[str, dict[str, int]] = {}
     for lane in LANES:
-        if lane.tag in missing_tags:
-            # The tag can reach records after the lookup that found it missing. The lane
-            # stays empty until a refresh finds the tag, so it never serves a partial set.
-            payloads[lane.name], skipped[lane.name] = [], {}
-            continue
         payloads[lane.name], skipped[lane.name] = _build_lane(records, lane)
     return payloads, skipped
