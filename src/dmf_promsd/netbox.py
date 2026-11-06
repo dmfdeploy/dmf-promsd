@@ -1,17 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import Any, NamedTuple
 
 import httpx
 
 from .records import DEVICES, SERVICES, VIRTUAL_MACHINES, Record
 
-
-def _tag_slug(name: str) -> str:
-    # NetBox ?tag= filters by tag SLUG (colon -> hyphen), not the name.
-    return name.replace(":", "-")
-
+_TAGS_PATH = "/api/extras/tags/"
 
 _LIST_PATHS = {
     SERVICES: "/api/ipam/services/",
@@ -49,6 +45,13 @@ class NetboxAPIError(RuntimeError):
         self.status_code = status_code
         self.body = body
         super().__init__(f"NetBox API {status_code}: {body}")
+
+
+class Listing(NamedTuple):
+    records: list[Record]
+    unreadable: int
+    # Tag slugs whose query NetBox refused. Their records are missing from `records`.
+    rejected: list[str]
 
 
 class NetboxClient:
@@ -98,22 +101,47 @@ class NetboxClient:
             query = None
         return results
 
-    def list_tagged(self, kind: str, tags: Iterable[str]) -> list[dict[str, Any]]:
+    def tag_slugs(self, names: Iterable[str]) -> dict[str, str]:
+        """Map each tag name that exists in NetBox to the slug NetBox gave it.
+
+        NetBox derives the slug when a client sends none, and the rule differs between
+        clients, so the slug is read back instead of computed. Names NetBox doesn't know
+        are left out.
+        """
+        wanted = list(names)
+        params = [("limit", "1000"), *(("name", name) for name in wanted)]
+        found = {tag["name"]: tag["slug"] for tag in self._list_paginated(_TAGS_PATH, params)}
+        return {name: found[name] for name in wanted if name in found}
+
+    def list_tagged(
+        self, kind: str, slugs: Iterable[str]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         path = _LIST_PATHS[kind]
         # NetBox ?tag= filters are ANDed; query each tag separately and union by
         # id so an object tagged with ANY of the tags is included (OR).
         merged: dict[Any, dict[str, Any]] = {}
-        for tag in tags:
-            for obj in self._list_paginated(path, [("limit", "1000"), ("tag", _tag_slug(tag))]):
+        rejected: list[str] = []
+        for slug in slugs:
+            try:
+                objects = self._list_paginated(path, [("limit", "1000"), ("tag", slug)])
+            except NetboxAPIError as exc:
+                # A 400 is about this query alone. Any other error means NetBox is
+                # unwell, and the caller keeps the last snapshot.
+                if exc.status_code != 400:
+                    raise
+                rejected.append(slug)
+                continue
+            for obj in objects:
                 merged[obj.get("id", id(obj))] = obj
-        return list(merged.values())
+        return list(merged.values()), rejected
 
-    def list_records(self, kind: str, tags: Iterable[str]) -> tuple[list[Record], int]:
+    def list_records(self, kind: str, slugs: Iterable[str]) -> Listing:
         records: list[Record] = []
         unreadable = 0
-        for raw in self.list_tagged(kind, tags):
+        objects, rejected = self.list_tagged(kind, slugs)
+        for raw in objects:
             try:
                 records.append(parse_record(kind, raw))
             except (KeyError, TypeError, AttributeError):
                 unreadable += 1
-        return records, unreadable
+        return Listing(records, unreadable, rejected)

@@ -204,9 +204,9 @@ class FakeNetbox:
     """The three list endpoints promsd calls, answering as NetBox v4.5.0 does.
 
     While `down` is set, every request gets the 503 of a proxy whose NetBox is
-    gone. A request without the token is a 403. `?tag=` matches tag slugs, repeated
-    `tag` parameters must all match, and a slug that is neither seeded nor on a
-    record is a 400. Every match comes back in one page.
+    gone. A request without the token is a 403. `?name=` on the tags endpoint matches
+    exactly. `?tag=` matches tag slugs, repeated `tag` parameters must all match, and a
+    slug that is neither seeded nor on a record is a 400. Every match comes back in one page.
     """
 
     def __init__(
@@ -215,18 +215,28 @@ class FakeNetbox:
         services: Iterable[dict[str, Any]] = (),
         devices: Iterable[dict[str, Any]] = (),
         virtual_machines: Iterable[dict[str, Any]] = (),
+        tag_slugs: dict[str, str] | None = None,
+        absent_tags: Iterable[str] = (),
     ) -> None:
         self._records = {
             _LIST_PATHS["services"]: list(services),
             _LIST_PATHS["devices"]: list(devices),
             _LIST_PATHS["virtual_machines"]: list(virtual_machines),
         }
-        self._slugs = {_slug(name) for name in SEEDED_TAGS} | {
-            tag["slug"]
-            for records in self._records.values()
-            for record in records
-            for tag in record["tags"]
-        }
+        # A tag created in the NetBox UI gets NetBox's own slug, `monitoringscrape` for
+        # `monitoring:scrape`. `tag_slugs` overrides the slug of a named tag everywhere.
+        overrides = tag_slugs or {}
+        self._tags = {name: overrides.get(name, _slug(name)) for name in SEEDED_TAGS}
+        for records in self._records.values():
+            for record in records:
+                for record_tag in record["tags"]:
+                    record_tag["slug"] = overrides.get(record_tag["name"], record_tag["slug"])
+                    self._tags[record_tag["name"]] = record_tag["slug"]
+        for name in absent_tags:
+            del self._tags[name]
+        self._slugs = set(self._tags.values())
+        # Slugs NetBox knows but answers 400 for on a list endpoint.
+        self.refused_slugs: set[str] = set()
         self.requests: list[httpx.Request] = []
         self.down = False
 
@@ -239,11 +249,21 @@ class FakeNetbox:
             return httpx.Response(503, text="Service Unavailable")
         if request.headers.get("Authorization") not in {f"Token {TOKEN}", f"Bearer {TOKEN}"}:
             return httpx.Response(403, json={"detail": "Invalid v1 token"})
+        if request.url.path == "/api/extras/tags/":
+            names = request.url.params.get_list("name")
+            found = [
+                {"id": i, "name": name, "slug": slug}
+                for i, (name, slug) in enumerate(self._tags.items(), 1)
+                if name in names
+            ]
+            return httpx.Response(
+                200, json={"count": len(found), "next": None, "previous": None, "results": found}
+            )
         records = self._records.get(request.url.path)
         if records is None:
             return httpx.Response(404, json={"detail": "Not found."})
         slugs = request.url.params.get_list("tag")
-        unknown = [slug for slug in slugs if slug not in self._slugs]
+        unknown = [slug for slug in slugs if slug not in self._slugs or slug in self.refused_slugs]
         if unknown:
             choice = f"Select a valid choice. {unknown[0]} is not one of the available choices."
             return httpx.Response(400, json={"tag": [choice]})
