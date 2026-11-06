@@ -74,6 +74,14 @@ class PromSDCache:
             source_counts: dict[str, int] = {}
             slugs = self._client.tag_slugs(lane.tag for lane in LANES)
             missing = {lane.tag for lane in LANES} - slugs.keys()
+            if not slugs:
+                # NetBox hides objects the token may not view, so a token without tag
+                # access sees no tags at all. Publishing empty lanes would pass for
+                # "no lane tags exist", so fail the refresh and keep the last snapshot.
+                raise RuntimeError(
+                    "No lane tag is visible in NetBox. The token may lack permission "
+                    "to view tags (extras.view_tag)."
+                )
             for kind in RECORD_KINDS:
                 kind_slugs = [
                     slugs[lane.tag] for lane in LANES if kind in lane.kinds and lane.tag in slugs

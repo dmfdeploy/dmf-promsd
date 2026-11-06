@@ -28,7 +28,7 @@ The service skips a record in a lane when it lacks a required field: `metrics_po
 
 ## Run it
 
-You need Python 3.12 or later, and a NetBox instance with an API token that can read services, devices and virtual machines.
+You need Python 3.12 or later, and a NetBox instance with an API token with view access to services, devices, virtual machines and tags (`extras | tag | view`). NetBox hides objects a token can't view, so without tag access promsd sees no lane tags. In that case the refresh fails, the service keeps the last good lanes, and `last_error` reports that no lane tag is visible and the token may lack `extras.view_tag`. The service reports not ready until a refresh succeeds or when the last good lanes go stale.
 
 Supply the NetBox address and token through environment variables. The service refuses to start without `NETBOX_URL` and `NETBOX_TOKEN`. Set the token from your secret store at run time and keep it out of files in this repository.
 
