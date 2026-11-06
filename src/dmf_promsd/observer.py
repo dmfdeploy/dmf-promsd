@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
 import time
@@ -19,6 +20,7 @@ from .observer_metadata import (
 )
 from .settings import ObserverSettings
 
+_LOG = logging.getLogger(__name__)
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
@@ -33,8 +35,7 @@ class OpenBaoObserver:
         clock: Any = time.time,
     ) -> None:
         self.settings = settings
-        verify = settings.ca_file if settings.configured else True
-        self._client = client or httpx.Client(verify=verify, timeout=10.0)
+        self._client: httpx.Client | None = client
         self._owns_client = client is None
         self._clock = clock
         self._token = ""
@@ -70,7 +71,11 @@ class OpenBaoObserver:
         )
         self._last_failure = Gauge(
             "dmf_openbao_approle_rotation_last_failure",
-            "Whether a failure is recorded for the active AppRole credential.",
+            (
+                "Conservative failure flag: 1 when the latest recorded failure is newer than "
+                "the last scheduled success. A manual failure raises it too, because the "
+                "registry keeps one shared failure time."
+            ),
             ("role", "target", "reason"),
             registry=self._registry,
         )
@@ -109,6 +114,24 @@ class OpenBaoObserver:
             registry=self._registry,
         )
         self._clear_series()
+        if self._client is None:
+            self._build_client()
+
+    def _build_client(self) -> bool:
+        """Create the HTTP client with the configured CA only.
+
+        A missing, empty or invalid CA leaves the targets unavailable and is retried
+        on the next poll. The client never falls back to the system trust store.
+        """
+        ca_file = self.settings.ca_file
+        try:
+            if not ca_file or Path(ca_file).stat().st_size == 0:
+                raise OSError("CA file missing or empty")
+            self._client = httpx.Client(verify=ca_file, timeout=10.0)
+        except Exception as exc:  # noqa: BLE001 - a bad CA must not stop the service
+            _LOG.error("observer client unavailable: %s", type(exc).__name__)
+            return False
+        return True
 
     def _clear_series(self) -> None:
         for metric in (
@@ -179,40 +202,59 @@ class OpenBaoObserver:
         except (httpx.HTTPError, ValueError):
             raise MetadataError("metadata request failed") from None
 
+    def _collect(self) -> dict[str, RotationRecord | None]:
+        """Read every target over the network; takes no lock."""
+        self._auth_retry_used = False
+        results: dict[str, RotationRecord | None] = {}
+        client_ready = self._client is not None or self._build_client()
+        for target in TARGET_ROLES:
+            if not client_ready:
+                results[target] = None
+                continue
+            try:
+                results[target] = self._read_target(target)
+            except MetadataError:
+                results[target] = None
+            except Exception as exc:  # noqa: BLE001 - a poll must never end the thread
+                # Log only the exception type: a message can carry response content.
+                _LOG.error("observer poll failed unexpectedly: %s", type(exc).__name__)
+                results[target] = None
+        return results
+
     def poll_once(self) -> None:
+        results = self._collect()
+        # Publish the finished snapshot at once so a scrape never waits on the network.
         with self._lock:
-            self._auth_retry_used = False
             self._clear_series()
             successes = 0
-            for target, role in TARGET_ROLES.items():
-                try:
-                    record = self._read_target(target)
-                except MetadataError:
-                    self._available.labels(target).set(0)
-                    self._collection_error.labels(target).set(1)
-                    continue
-                successes += 1
-                self._available.labels(target).set(1)
-                self._collection_error.labels(target).set(0)
-                labels = (role, target)
-                self._expires.labels(*labels).set(record.expires_at)
-                self._ttl.labels(*labels).set(record.ttl_seconds)
-                if record.last_successful_rotation_at is not None:
-                    self._last_success.labels(*labels).set(record.last_successful_rotation_at)
-                if record.last_scheduled_success_at is not None:
-                    self._last_scheduled_success.labels(*labels).set(
-                        record.last_scheduled_success_at
-                    )
-                if record.last_failure_at is not None:
-                    reason = record.last_failure_reason_code or "unknown"
-                    self._last_failure.labels(*labels, reason).set(1)
-                    self._last_failure_timestamp.labels(*labels, reason).set(record.last_failure_at)
-                self._latest_run.labels(
-                    *labels, record.latest_run_kind, record.latest_run_outcome
-                ).set(record.latest_run_at)
+            for target, record in results.items():
+                if record is not None:
+                    successes += 1
+                    self._publish(target, TARGET_ROLES[target], record)
             self._collector_success.set(1 if successes == len(TARGET_ROLES) else 0)
             self._last_poll_at = self._clock()
             self._poll_timestamp.set(self._last_poll_at)
+
+    def _publish(self, target: str, role: str, record: RotationRecord) -> None:
+        self._available.labels(target).set(1)
+        self._collection_error.labels(target).set(0)
+        labels = (role, target)
+        self._expires.labels(*labels).set(record.expires_at)
+        self._ttl.labels(*labels).set(record.ttl_seconds)
+        if record.last_successful_rotation_at is not None:
+            self._last_success.labels(*labels).set(record.last_successful_rotation_at)
+        if record.last_scheduled_success_at is not None:
+            self._last_scheduled_success.labels(*labels).set(record.last_scheduled_success_at)
+        if record.last_failure_at is not None:
+            reason = record.last_failure_reason_code or "unknown"
+            # The registry keeps one failure time for scheduled and manual runs, so a
+            # manual failure after a scheduled success also raises the flag.
+            if record.scheduled_failure_active:
+                self._last_failure.labels(*labels, reason).set(1)
+            self._last_failure_timestamp.labels(*labels, reason).set(record.last_failure_at)
+        self._latest_run.labels(*labels, record.latest_run_kind, record.latest_run_outcome).set(
+            record.latest_run_at
+        )
 
     def start(self) -> None:
         if not self.settings.configured or self._thread is not None:
@@ -220,7 +262,12 @@ class OpenBaoObserver:
 
         def run() -> None:
             while not self._stop.is_set():
-                self.poll_once()
+                try:
+                    self.poll_once()
+                except Exception as exc:  # noqa: BLE001 - a poll must never end the thread
+                    _LOG.error("observer poll cycle failed: %s", type(exc).__name__)
+                    with self._lock:
+                        self._clear_series()
                 self._stop.wait(self.settings.interval_seconds)
 
         self._stop.clear()
@@ -233,7 +280,7 @@ class OpenBaoObserver:
             self._thread.join(timeout=65)
             self._thread = None
         self._token = ""
-        if self._owns_client:
+        if self._owns_client and self._client is not None:
             self._client.close()
 
     def render(self) -> tuple[bytes, str]:
