@@ -7,6 +7,7 @@ from collections.abc import Callable
 from fastapi.testclient import TestClient
 
 from dmf_promsd import __version__
+from dmf_promsd.cache import PromSDCache
 from dmf_promsd.main import create_app
 from dmf_promsd.settings import Settings
 from tests.netbox45 import BASE_URL, TOKEN, FakeNetbox, device, service, virtual_machine
@@ -56,7 +57,7 @@ def test_lifespan_refreshes_on_startup_and_stops_on_shutdown():
         "http_sd_refresh": "11s",
         "freshness_window_seconds": 14,
         "source_counts": {"services": 0, "devices": 1, "virtual_machines": 0},
-        "unavailable_tags": [],
+        "missing_tags": [],
         "last_error": None,
     }
     assert ready.status_code == 200
@@ -235,15 +236,19 @@ def test_a_record_promsd_cannot_read_costs_the_others_nothing():
     assert health["last_error"] is None
 
 
+def _lanes(http: TestClient) -> dict[str, list[str]]:
+    return {
+        lane: [t for group in http.get(f"/sd/{lane}").json() for t in group["targets"]]
+        for lane in ("scrape", "probe", "snmp")
+    }
+
+
 def _serve(netbox: FakeNetbox) -> tuple[dict[str, list[str]], dict]:
     client = netbox.client()
     app = create_app(Settings(netbox_url=BASE_URL, netbox_token=TOKEN), client=client)
     try:
         with TestClient(app) as http:
-            served = {
-                lane: [t for group in http.get(f"/sd/{lane}").json() for t in group["targets"]]
-                for lane in ("scrape", "probe", "snmp")
-            }
+            served = _lanes(http)
             health = http.get("/healthz").json()
             ready = http.get("/readyz")
     finally:
@@ -260,28 +265,23 @@ def _one_device_per_lane() -> list[dict]:
     ]
 
 
+ALL_LANES = {"scrape": ["192.0.2.11:9100"], "probe": ["192.0.2.21"], "snmp": ["192.0.2.31"]}
+
+
 # promsd must use the slug NetBox chose, not one it computes from the tag name.
 def test_lanes_follow_the_slugs_netbox_chose():
     ui_slugs = {f"monitoring:{lane}": f"monitoring{lane}" for lane in ("scrape", "probe", "snmp")}
     served, health = _serve(FakeNetbox(devices=_one_device_per_lane(), tag_slugs=ui_slugs))
 
-    assert served == {
-        "scrape": ["192.0.2.11:9100"],
-        "probe": ["192.0.2.21"],
-        "snmp": ["192.0.2.31"],
-    }
+    assert served == ALL_LANES
     assert health["last_error"] is None
-    assert health["unavailable_tags"] == []
+    assert health["missing_tags"] == []
 
 
 def test_legacy_hyphen_slugs_still_work():
     served, _ = _serve(FakeNetbox(devices=_one_device_per_lane()))
 
-    assert served == {
-        "scrape": ["192.0.2.11:9100"],
-        "probe": ["192.0.2.21"],
-        "snmp": ["192.0.2.31"],
-    }
+    assert served == ALL_LANES
 
 
 # A lane tag NetBox lacks empties its lane only, and /healthz names the tag.
@@ -289,17 +289,79 @@ def test_a_missing_lane_tag_empties_only_its_lane():
     netbox = FakeNetbox(devices=_one_device_per_lane(), absent_tags=["monitoring:probe"])
     served, health = _serve(netbox)
 
-    assert served == {"scrape": ["192.0.2.11:9100"], "probe": [], "snmp": ["192.0.2.31"]}
+    assert served == {**ALL_LANES, "probe": []}
     assert health["last_error"] is None
-    assert health["unavailable_tags"] == ["monitoring:probe"]
+    assert health["missing_tags"] == ["monitoring:probe"]
+    # No record query names a tag NetBox doesn't have.
+    queried = {r.url.params["tag"] for r in netbox.requests if "tag" in r.url.params}
+    assert queried == {"monitoring-scrape", "monitoring-snmp"}
 
 
-# NetBox's 400 for one lane's query costs the other lanes nothing.
-def test_a_refused_lane_query_empties_only_its_lane():
+# A device that carries two lane tags still serves only the lane whose tag exists.
+def test_a_device_with_two_lane_tags_serves_only_the_existing_lane():
+    both = device(
+        "node-1",
+        ["monitoring:scrape", "monitoring:snmp"],
+        address="192.0.2.11/24",
+        metrics_port=9100,
+    )
+    served, health = _serve(FakeNetbox(devices=[both], absent_tags=["monitoring:snmp"]))
+
+    assert served == {"scrape": ["192.0.2.11:9100"], "probe": [], "snmp": []}
+    assert health["missing_tags"] == ["monitoring:snmp"]
+
+
+def _refused_from_page(offset: int):
+    def refuse(request) -> bool:
+        return (
+            request.url.path == "/api/dcim/devices/"
+            and int(request.url.params.get("offset", 0)) >= offset
+        )
+
+    return refuse
+
+
+# A 400 on a record query is not a missing tag. The refresh fails and the last snapshot stays.
+def test_a_refused_record_query_keeps_the_last_snapshot():
+    for first_bad_offset in (0, 1):
+        netbox = FakeNetbox(devices=[*_one_device_per_lane(), _extra_scrape_device()])
+        netbox.page_size = 1
+        client = netbox.client()
+        cache = PromSDCache(client=client, ttl_seconds=60)
+        try:
+            assert cache.refresh()
+            good = cache.get_snapshot()
+            assert good is not None
+
+            netbox.refuse = _refused_from_page(first_bad_offset)
+            assert not cache.refresh()
+
+            state = cache.state()
+            assert state.snapshot is good
+            assert state.last_error is not None and "NetBox API 400" in state.last_error
+        finally:
+            client.close()
+
+
+def _extra_scrape_device() -> dict:
+    return device("node-2", ["monitoring:scrape"], address="192.0.2.12/24", metrics_port=9100)
+
+
+# A tag deleted after a good snapshot empties its lane on the next refresh.
+def test_a_tag_removed_after_a_good_snapshot_empties_its_lane():
     netbox = FakeNetbox(devices=_one_device_per_lane())
-    netbox.refused_slugs.add("monitoring-snmp")
-    served, health = _serve(netbox)
+    client = netbox.client()
+    cache = PromSDCache(client=client, ttl_seconds=60)
+    try:
+        assert cache.refresh()
+        assert [g["targets"] for g in cache.lane_payload("snmp")] == [["192.0.2.31"]]
 
-    assert served == {"scrape": ["192.0.2.11:9100"], "probe": ["192.0.2.21"], "snmp": []}
-    assert health["last_error"] is None
-    assert health["unavailable_tags"] == ["monitoring:snmp"]
+        netbox.remove_tag("monitoring:snmp")
+        assert cache.refresh()
+
+        assert cache.lane_payload("snmp") == []
+        assert [g["targets"] for g in cache.lane_payload("scrape")] == [["192.0.2.11:9100"]]
+        snapshot = cache.get_snapshot()
+        assert snapshot is not None and snapshot.missing_tags == ["monitoring:snmp"]
+    finally:
+        client.close()

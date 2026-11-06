@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from typing import Any, NamedTuple
+from typing import Any
 
 import httpx
 
@@ -45,13 +45,6 @@ class NetboxAPIError(RuntimeError):
         self.status_code = status_code
         self.body = body
         super().__init__(f"NetBox API {status_code}: {body}")
-
-
-class Listing(NamedTuple):
-    records: list[Record]
-    unreadable: int
-    # Tag slugs whose query NetBox refused. Their records are missing from `records`.
-    rejected: list[str]
 
 
 class NetboxClient:
@@ -113,35 +106,22 @@ class NetboxClient:
         found = {tag["name"]: tag["slug"] for tag in self._list_paginated(_TAGS_PATH, params)}
         return {name: found[name] for name in wanted if name in found}
 
-    def list_tagged(
-        self, kind: str, slugs: Iterable[str]
-    ) -> tuple[list[dict[str, Any]], list[str]]:
+    def list_tagged(self, kind: str, slugs: Iterable[str]) -> list[dict[str, Any]]:
         path = _LIST_PATHS[kind]
         # NetBox ?tag= filters are ANDed; query each tag separately and union by
         # id so an object tagged with ANY of the tags is included (OR).
         merged: dict[Any, dict[str, Any]] = {}
-        rejected: list[str] = []
         for slug in slugs:
-            try:
-                objects = self._list_paginated(path, [("limit", "1000"), ("tag", slug)])
-            except NetboxAPIError as exc:
-                # A 400 is about this query alone. Any other error means NetBox is
-                # unwell, and the caller keeps the last snapshot.
-                if exc.status_code != 400:
-                    raise
-                rejected.append(slug)
-                continue
-            for obj in objects:
+            for obj in self._list_paginated(path, [("limit", "1000"), ("tag", slug)]):
                 merged[obj.get("id", id(obj))] = obj
-        return list(merged.values()), rejected
+        return list(merged.values())
 
-    def list_records(self, kind: str, slugs: Iterable[str]) -> Listing:
+    def list_records(self, kind: str, slugs: Iterable[str]) -> tuple[list[Record], int]:
         records: list[Record] = []
         unreadable = 0
-        objects, rejected = self.list_tagged(kind, slugs)
-        for raw in objects:
+        for raw in self.list_tagged(kind, slugs):
             try:
                 records.append(parse_record(kind, raw))
             except (KeyError, TypeError, AttributeError):
                 unreadable += 1
-        return Listing(records, unreadable, rejected)
+        return records, unreadable

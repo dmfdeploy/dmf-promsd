@@ -36,12 +36,11 @@ def test_netbox_client_paginates_and_uses_token_auth():
     )
 
     try:
-        results, rejected = client.list_tagged("services", ("monitoring-scrape",))
+        results = client.list_tagged("services", ("monitoring-scrape",))
     finally:
         client.close()
 
     assert [item["id"] for item in results] == [1, 2]
-    assert rejected == []
     assert len(requests) == 2
     # NetBox ?tag= filters by slug, not the tag name.
     assert requests[0].url.params.get("tag") == "monitoring-scrape"

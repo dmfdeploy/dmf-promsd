@@ -11,7 +11,7 @@ from __future__ import annotations
 import itertools
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 import httpx
@@ -232,13 +232,23 @@ class FakeNetbox:
                 for record_tag in record["tags"]:
                     record_tag["slug"] = overrides.get(record_tag["name"], record_tag["slug"])
                     self._tags[record_tag["name"]] = record_tag["slug"]
-        for name in absent_tags:
-            del self._tags[name]
         self._slugs = set(self._tags.values())
-        # Slugs NetBox knows but answers 400 for on a list endpoint.
-        self.refused_slugs: set[str] = set()
+        # Answers 400 to a list request this returns true for, such as one for a later page.
+        self.refuse: Callable[[httpx.Request], bool] = lambda request: False
+        # Page size of list endpoints; None puts every match in one page.
+        self.page_size: int | None = None
         self.requests: list[httpx.Request] = []
         self.down = False
+        for name in absent_tags:
+            self.remove_tag(name)
+
+    def remove_tag(self, name: str) -> None:
+        """Delete a tag. NetBox strips it from every object that carried it."""
+        self._tags.pop(name, None)
+        self._slugs = set(self._tags.values())
+        for records in self._records.values():
+            for record in records:
+                record["tags"] = [t for t in record["tags"] if t["name"] != name]
 
     def client(self, token: str = TOKEN) -> NetboxClient:
         return NetboxClient(base_url=BASE_URL, token=token, transport=httpx.MockTransport(self))
@@ -262,15 +272,27 @@ class FakeNetbox:
         records = self._records.get(request.url.path)
         if records is None:
             return httpx.Response(404, json={"detail": "Not found."})
+        if self.refuse(request):
+            return httpx.Response(400, json={"detail": "Bad request."})
         slugs = request.url.params.get_list("tag")
-        unknown = [slug for slug in slugs if slug not in self._slugs or slug in self.refused_slugs]
+        unknown = [slug for slug in slugs if slug not in self._slugs]
         if unknown:
             choice = f"Select a valid choice. {unknown[0]} is not one of the available choices."
             return httpx.Response(400, json={"tag": [choice]})
         matches = [
             record for record in records if set(slugs) <= {tag["slug"] for tag in record["tags"]}
         ]
+        offset = int(request.url.params.get("offset", 0))
+        size = self.page_size or max(len(matches), 1)
+        following = None
+        if offset + size < len(matches):
+            following = str(request.url.copy_set_param("offset", offset + size))
         return httpx.Response(
             200,
-            json={"count": len(matches), "next": None, "previous": None, "results": matches},
+            json={
+                "count": len(matches),
+                "next": following,
+                "previous": None,
+                "results": matches[offset : offset + size],
+            },
         )
