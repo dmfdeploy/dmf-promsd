@@ -81,7 +81,7 @@ class PromSDCache:
                 kind_records, unreadable = self._client.list_records(kind, kind_slugs)
                 records.extend(kind_records)
                 source_counts[kind] = len(kind_records) + unreadable
-            payloads, skipped = build_payloads(records)
+            payloads, skipped = build_payloads(records, missing)
         except Exception as exc:  # noqa: BLE001, a failed refresh keeps the last snapshot
             with self._lock:
                 self._last_error = str(exc)

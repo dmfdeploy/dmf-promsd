@@ -237,10 +237,19 @@ class FakeNetbox:
         self.refuse: Callable[[httpx.Request], bool] = lambda request: False
         # Page size of list endpoints; None puts every match in one page.
         self.page_size: int | None = None
+        # Runs once after the next tag lookup is answered, to change NetBox mid-refresh.
+        self.after_tag_lookup: Callable[[], None] | None = None
         self.requests: list[httpx.Request] = []
         self.down = False
         for name in absent_tags:
             self.remove_tag(name)
+
+    def attach_tag(self, name: str, records: Iterable[dict[str, Any]]) -> None:
+        """Create a tag if needed and put it on the given records."""
+        slug = self._tags.setdefault(name, _slug(name))
+        self._slugs.add(slug)
+        for record in records:
+            record["tags"].append({**tag(name), "slug": slug})
 
     def remove_tag(self, name: str) -> None:
         """Delete a tag. NetBox strips it from every object that carried it."""
@@ -266,9 +275,13 @@ class FakeNetbox:
                 for i, (name, slug) in enumerate(self._tags.items(), 1)
                 if name in names
             ]
-            return httpx.Response(
+            response = httpx.Response(
                 200, json={"count": len(found), "next": None, "previous": None, "results": found}
             )
+            if self.after_tag_lookup is not None:
+                after, self.after_tag_lookup = self.after_tag_lookup, None
+                after()
+            return response
         records = self._records.get(request.url.path)
         if records is None:
             return httpx.Response(404, json={"detail": "Not found."})

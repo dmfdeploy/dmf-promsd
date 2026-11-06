@@ -365,3 +365,32 @@ def test_a_tag_removed_after_a_good_snapshot_empties_its_lane():
         assert snapshot is not None and snapshot.missing_tags == ["monitoring:snmp"]
     finally:
         client.close()
+
+
+# The tag can appear between the lookup that misses it and the record queries. The lane
+# stays empty for that refresh, and the next refresh serves every record.
+def test_a_tag_created_mid_refresh_does_not_fill_its_lane_partially():
+    tags = ["monitoring:scrape", "monitoring:snmp"]
+    both = device("node-1", tags, address="192.0.2.11/24", metrics_port=9100)
+    scrape_only = device(
+        "switch-1", ["monitoring:scrape"], address="192.0.2.31/24", metrics_port=9100
+    )
+    netbox = FakeNetbox(devices=[both, scrape_only], absent_tags=["monitoring:snmp"])
+    netbox.after_tag_lookup = lambda: netbox.attach_tag("monitoring:snmp", [both, scrape_only])
+    client = netbox.client()
+    cache = PromSDCache(client=client, ttl_seconds=60)
+    try:
+        assert cache.refresh()
+        snapshot = cache.get_snapshot()
+        assert snapshot is not None
+        assert snapshot.lanes["snmp"] == []
+        assert snapshot.skipped["snmp"] == {}
+        assert snapshot.missing_tags == ["monitoring:snmp"]
+        assert len(snapshot.lanes["scrape"]) == 2
+
+        assert cache.refresh()
+        targets = [g["targets"] for g in cache.lane_payload("snmp")]
+        assert sorted(targets) == [["192.0.2.11"], ["192.0.2.31"]]
+        assert cache.get_snapshot().missing_tags == []
+    finally:
+        client.close()
