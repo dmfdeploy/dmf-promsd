@@ -42,12 +42,7 @@ You need Python 3.12 or later, and a NetBox instance with an API token with view
 
 Supply the NetBox address and token through environment variables. The service refuses to start without `NETBOX_URL` and `NETBOX_TOKEN`. Set the token from your secret store at run time and keep it out of files in this repository.
 
-```sh
-python -m pip install -e '.[dev]'
-export NETBOX_URL="https://netbox.example.com"
-export NETBOX_TOKEN="<your NetBox API token>"
-uvicorn dmf_promsd.main:create_app --factory --host 0.0.0.0 --port 8000
-```
+To run it from source, see [Run the service locally](CONTRIBUTING.md#run-the-service-locally) in CONTRIBUTING.
 
 To run it in a container, build the image from the `Dockerfile` in this repository and pass the same variables:
 
@@ -108,4 +103,4 @@ See [NOTICE](NOTICE) for attribution notes.
 
 ## For contributors
 
-`AGENTS.md`, `CLAUDE.md` and `QWEN.md` hold instructions for AI coding agents that help maintain this repository. For the human workflow, see [CONTRIBUTING.md](CONTRIBUTING.md).
+For setup, the test command, the git hooks and what a pull request needs, see [CONTRIBUTING.md](CONTRIBUTING.md). `AGENTS.md`, `CLAUDE.md` and `QWEN.md` hold instructions for AI coding agents that help maintain this repository.
