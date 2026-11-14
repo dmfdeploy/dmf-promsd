@@ -10,8 +10,94 @@ single source of truth: all changes land via **Pull Request** against `main`.
 1. Read the platform overview in the [dmfdeploy/dmfdeploy](https://github.com/dmfdeploy/dmfdeploy) umbrella repo
    (`docs/architecture/dmfdeploy-platform-plan.md`) and apply any relevant ADRs from
    `docs/decisions/INDEX.md`.
-2. Fork or branch, make your change on a topic branch, open a PR against `main`.
-3. Ensure CI is green and your commits are **signed off** (see DCO below).
+2. Set up your machine and run the checks (see [Develop and test](#develop-and-test)).
+3. Fork or branch, make your change on a topic branch, open a PR against `main`.
+4. Ensure CI is green, your commits are **signed off** (see DCO below), and the
+   PR body links its issue (see [What a pull request needs](#what-a-pull-request-needs)).
+
+## Develop and test
+
+This section is the one place for development and test commands. The README and
+`AGENTS.md` point here. The commands match what CI runs in
+`.github/workflows/ci.yml`.
+
+### Prerequisites
+
+- **Python 3.12 or later.** CI tests 3.12.
+- **Optional tools.** [gitleaks](https://github.com/gitleaks/gitleaks) powers
+  the commit hook.
+
+You don't need a NetBox instance to run the checks. The tests use a fake NetBox
+API.
+
+### Set up
+
+Run these commands from the repository root. Check first that `python3` is
+version 3.12 or later. If it isn't, use the full name of a newer interpreter,
+such as `python3.13`, in place of `python3`.
+
+```bash
+python3 --version
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+```
+
+The install takes under a minute on a fresh checkout, depending on your network.
+
+### Run the checks
+
+Run one script from the repository root, with the virtual environment active:
+
+```bash
+scripts/check.sh
+```
+
+CI runs the same script, so a green run here means the `test` job passes. The
+script takes about five seconds. It stops at the first failing step:
+
+1. It fails on any tracked Python file over 400 lines.
+2. It runs `ruff format --check .`.
+3. It runs `ruff check .`.
+4. It runs `pytest -q`, which has about 80 tests.
+
+To fix a formatting failure, run `ruff format .` and check the result with
+`git diff`.
+
+CI also runs two checks outside this script, and you don't need to run them
+before you push. The `working-model` job confirms that the working-model
+block in `AGENTS.md`, `CLAUDE.md` and `QWEN.md` matches the umbrella template.
+The `guard` workflow scans for secrets and vulnerabilities, lints the workflow
+files, and checks commit subjects and the issue link. The `DCO` workflow checks
+sign-offs.
+
+### Run the service locally
+
+Set the NetBox address and token, then start the service from the repository
+root. The [README](README.md#run-it) says which token permissions the service
+needs. To run it in a container instead, see the same section.
+
+```bash
+export NETBOX_URL="https://netbox.example.com"
+export NETBOX_TOKEN="<your NetBox API token>"
+uvicorn dmf_promsd.main:create_app --factory --host 0.0.0.0 --port 8000
+```
+
+The service refuses to start without `NETBOX_URL` and `NETBOX_TOKEN`. Take the
+token from your secret store at run time, and keep it out of files in this
+repository.
+
+### Install the hooks
+
+Run this once in each clone:
+
+```bash
+bin/install-hooks.sh
+```
+
+The script sets `core.hooksPath` to `.githooks/`. The `pre-commit` and
+`pre-push` hooks scan your changes with gitleaks. They skip the scan with a
+warning when gitleaks isn't installed. CI runs the same scan.
 
 ## Branch & PR model
 
@@ -19,10 +105,32 @@ single source of truth: all changes land via **Pull Request** against `main`.
   banned; linear history is required.
 - Topic branches: **`<handle>/<short-slug>`** (e.g. `jdoe/fix-probe-path`). One
   logical change per branch; rebase onto `main` rather than long-lived branches.
-- **Conventional Commits** (`feat:`, `fix:`, `docs:`, `chore:`, `refactor:`,
-  `test:`, `build:`, `ci:`) are **required** on `main` and checked in CI. Other
-  prefixes are rejected.
 - A reviewer (per `CODEOWNERS`) and green required checks are needed to merge.
+
+## What a pull request needs
+
+CI checks each of these.
+
+- **An issue link in the PR body.** Write a fully qualified reference to an issue
+  in the [dmfdeploy/dmfdeploy](https://github.com/dmfdeploy/dmfdeploy/issues)
+  backlog, such as `Refs dmfdeploy/dmfdeploy#912`. Use `Closes dmfdeploy/dmfdeploy#N`
+  if the pull request finishes the issue. A bare `#N` doesn't count, because it
+  points at this repo. If your change has no issue, such as a typo fix, a
+  maintainer can add the `no-issue` label. Only maintainers can add labels, so
+  if you open the pull request from a fork, ask in the PR. The check runs again
+  when you edit the body or when a label changes.
+- **A DCO sign-off on every commit.** Use `git commit -s`. See the next section.
+- **Conventional commit subjects.** Use `type(scope): summary`, with one
+  optional scope in lowercase. The types are `feat`, `fix`, `docs`, `chore`,
+  `refactor`, `test`, `build`, `ci`, `perf`, `revert` and `style`. Other types,
+  such as `wip`, are rejected, and so is a scope list such as `(api,ui)`.
+- **Passing CI.** The `ci` workflow runs the checks in
+  [Develop and test](#develop-and-test). The `guard` workflow adds secret and
+  vulnerability scans.
+
+Also leave agent session links out of commit messages and the PR body. The
+`guard` workflow rejects one known session-link format. It can't recognise
+every tool's links, so reviewers look for them too.
 
 ## Developer Certificate of Origin (DCO)
 

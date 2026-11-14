@@ -14,18 +14,10 @@ holds status, decisions and plans. "DMF" means the EBU Dynamic Media Facility.
 
 ## Build and test
 
-Python 3.12 or later. CI (`.github/workflows/ci.yml`) runs:
-
-```sh
-python -m pip install -e '.[dev]'
-scripts/check.sh
-```
-
-`scripts/check.sh` fails on any tracked Python file over 400 lines, then runs
-`ruff format --check`, `ruff check`, and `pytest`.
-
-Run `bin/install-hooks.sh` once per clone. `scripts/publish-to-ghcr.sh` builds
-the image; `--push` publishes it.
+Setup, the check script, the hooks and the pull request gates are in
+[CONTRIBUTING.md](CONTRIBUTING.md#develop-and-test). That section is the one
+copy of the commands. `scripts/publish-to-ghcr.sh` builds the image; `--push`
+publishes it.
 
 ## Rules that are easy to miss
 
