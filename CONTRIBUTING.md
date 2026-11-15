@@ -64,8 +64,8 @@ script takes about five seconds. It stops at the first failing step:
 To fix a formatting failure, run `ruff format .` and check the result with
 `git diff`.
 
-CI also runs two checks outside this script, and you don't need to run them
-before you push. The `working-model` job confirms that the working-model
+CI also runs additional checks outside this script, and you don't need to run
+them before you push. The `working-model` job confirms that the working-model
 block in `AGENTS.md`, `CLAUDE.md` and `QWEN.md` matches the umbrella template.
 The `guard` workflow scans for secrets and vulnerabilities, lints the workflow
 files, and checks commit subjects and the issue link. The `DCO` workflow checks
