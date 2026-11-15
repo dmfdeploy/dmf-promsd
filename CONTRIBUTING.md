@@ -118,7 +118,8 @@ CI checks each of these.
   points at this repo. If your change has no issue, such as a typo fix, a
   maintainer can add the `no-issue` label. Only maintainers can add labels, so
   if you open the pull request from a fork, ask in the PR. The check runs again
-  when you edit the body or when a label changes.
+  when you edit the body or push a commit. Adding the label does not rerun it,
+  so after the label is on, edit the body or push to clear a failed check.
 - **A DCO sign-off on every commit.** Use `git commit -s`. See the next section.
 - **Conventional commit subjects.** Use `type(scope): summary`, with one
   optional scope in lowercase. The types are `feat`, `fix`, `docs`, `chore`,
