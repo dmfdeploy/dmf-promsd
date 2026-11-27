@@ -4,7 +4,7 @@
 
 Turns NetBox inventory into Prometheus `http_sd` service discovery targets.
 
-Part of [dmfdeploy](https://github.com/dmfdeploy/dmfdeploy), an independent open prototype that explores the ideas of the EBU Dynamic Media Facility on commodity infrastructure. Status: prototype, version 0.1.4.
+Part of [dmfdeploy](https://github.com/dmfdeploy/dmfdeploy), an independent open prototype that explores the ideas of the EBU Dynamic Media Facility on commodity infrastructure. Status: prototype, version 0.1.5.
 
 ## What it is for
 
